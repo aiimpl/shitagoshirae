@@ -230,6 +230,13 @@ footer b{color:var(--ink)}
           <input type="number" id="targetMb" min="1" max="512" step="1" value="30" style="width:88px"> MB
         </div>
         <div class="row">
+          <label data-t="set.fade"></label>
+          <div class="seg" id="segFade">
+            <button data-v="off" data-t="fade.off"></button>
+            <button data-v="on" data-t="fade.on"></button>
+          </div>
+        </div>
+        <div class="row">
           <label data-t="set.audio"></label>
           <div class="seg" id="segAudio">
             <button data-v="copy" data-t="audio.copy"></button>
@@ -246,6 +253,8 @@ footer b{color:var(--ink)}
       <p class="hint" data-t="tl.hint"></p>
       <div id="timeline"></div>
       <div class="actions" style="margin-top:14px">
+        <button class="btn" id="bSplit" data-t="tl.split"></button>
+        <button class="btn" id="bDropSeg" data-t="tl.drop"></button>
         <button class="btn" id="bAddCue" data-t="tl.newCue"></button>
         <span class="small" id="trimLabel" style="font-weight:800"></span>
       </div>

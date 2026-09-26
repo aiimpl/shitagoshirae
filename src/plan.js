@@ -84,13 +84,13 @@ function clampBitrate(bps) {
 }
 
 /**
- * 切り出す位置を、キーフレームと音声パケットの切れ目に合わせる
+ * 区間ひとつぶんの切り出し位置を、キーフレームと音声パケットの切れ目に合わせる
  * 音声の開始は「切り上げ」にする。こうすると出力の時刻が必ず0以上になり、編集リストが要らない
  * @param {{ inUs: number, outUs: number, durationUs: number, keyframeUs: number[],
- *           audioPacketUs: number, audioFirstUs: number }} a
- * @returns {PlanTrim}
+ *           audioPacketUs: number, audioFirstUs: number, outStartUs?: number }} a
+ * @returns {import('./types.js').PlanCut}
  */
-export function planTrim(a) {
+export function planCut(a) {
   const inUs = Math.max(0, Math.min(a.inUs, a.durationUs));
   const outUs = Math.max(inUs, Math.min(a.outUs, a.durationUs));
   let decodeFromUs = 0;
@@ -116,12 +116,97 @@ export function planTrim(a) {
   return {
     inUs,
     outUs,
-    durationUs: outUs - inUs,
+    outStartUs: a.outStartUs || 0,
     decodeFromUs,
     audioInUs,
     audioOutUs,
     avOffsetUs: audioInUs - inUs,
   };
+}
+
+/**
+ * 使う区間をつないだときの、全体の計画を作る
+ * 重なりや前後の入れ違いはここで整える
+ * @param {{ segments: import('./types.js').Segment[], durationUs: number, keyframeUs: number[],
+ *           audioPacketUs: number, audioFirstUs: number }} a
+ * @returns {import('./types.js').PlanTrim}
+ */
+export function planCuts(a) {
+  const ranges = normalizeSegments(a.segments, a.durationUs);
+  /** @type {import('./types.js').PlanCut[]} */
+  const cuts = [];
+  let outStartUs = 0;
+  let avOffsetUs = 0;
+  for (const range of ranges) {
+    const cut = planCut({
+      inUs: range.startUs,
+      outUs: range.endUs,
+      durationUs: a.durationUs,
+      keyframeUs: a.keyframeUs,
+      audioPacketUs: a.audioPacketUs,
+      audioFirstUs: a.audioFirstUs,
+      outStartUs,
+    });
+    if (cut.outUs <= cut.inUs) {
+      continue;
+    }
+    cuts.push(cut);
+    outStartUs += cut.outUs - cut.inUs;
+    avOffsetUs = Math.max(avOffsetUs, cut.avOffsetUs);
+  }
+  return { cuts, durationUs: outStartUs, avOffsetUs };
+}
+
+/**
+ * 区間を、時刻の順に並べて重なりをまとめる
+ * @param {import('./types.js').Segment[]} segments
+ * @param {number} durationUs
+ * @returns {{ startUs: number, endUs: number }[]}
+ */
+export function normalizeSegments(segments, durationUs) {
+  const clean = segments
+    .map((s) => ({
+      startUs: Math.max(0, Math.min(s.startUs, durationUs)),
+      endUs: Math.max(0, Math.min(s.endUs, durationUs)),
+    }))
+    .filter((s) => s.endUs > s.startUs)
+    .sort((x, y) => x.startUs - y.startUs);
+  /** @type {{ startUs: number, endUs: number }[]} */
+  const out = [];
+  for (const s of clean) {
+    const last = out[out.length - 1];
+    if (last && s.startUs <= last.endUs) {
+      last.endUs = Math.max(last.endUs, s.endUs);
+      continue;
+    }
+    out.push({ ...s });
+  }
+  return out;
+}
+
+/**
+ * 元の動画での時刻を、出来上がりでの時刻に移す
+ * 落とした区間にかかっていたら、残った部分だけに切り分ける
+ * @param {number} startUs
+ * @param {number} endUs
+ * @param {import('./types.js').PlanCut[]} cuts
+ * @returns {{ startUs: number, endUs: number }[]}
+ */
+export function toOutputTimes(startUs, endUs, cuts) {
+  /** @type {{ startUs: number, endUs: number }[]} */
+  const out = [];
+  for (const cut of cuts) {
+    const from = Math.max(startUs, cut.inUs);
+    const to = Math.min(endUs, cut.outUs);
+    if (to <= from) {
+      continue;
+    }
+    out.push({
+      startUs: cut.outStartUs + (from - cut.inUs),
+      endUs: cut.outStartUs + (to - cut.inUs),
+    });
+  }
+  return out;
 }
 
 /**
@@ -248,6 +333,9 @@ export function checkXLimits(plan, probe, estimatedBytes) {
   if (probe.video && !probe.video.decodable) {
     out.push({ level: 'block', code: 'w.cannotDecode', args: { codec: probe.video.codec } });
   }
+  if (plan.trim.cuts.length === 0) {
+    out.push({ level: 'block', code: 'w.noRange' });
+  }
   if (plan.trim.avOffsetUs > 5000) {
     out.push({ level: 'info', code: 'w.avOffset', args: { ms: Math.round(plan.trim.avOffsetUs / 1000) } });
   }
@@ -283,16 +371,15 @@ export function buildPlan(probe, settings) {
     return {
       video: emptyVideoPlan(),
       audio: { mode: 'drop', reason: 'a.none', bitrateBps: 0 },
-      trim: planTrim({ inUs: 0, outUs: 0, durationUs: 0, keyframeUs: [], audioPacketUs: 0, audioFirstUs: 0 }),
+      trim: { cuts: [], durationUs: 0, avOffsetUs: 0 },
       warnings: [{ level: 'block', code: 'w.noVideo' }],
       blocked: true,
     };
   }
 
   const audio = decideAudioCopy(probe.audio, settings.audio);
-  const trim = planTrim({
-    inUs: settings.inUs,
-    outUs: settings.outUs,
+  const trim = planCuts({
+    segments: settings.segments,
     durationUs: probe.durationUs,
     keyframeUs: v.keyframeUs,
     audioPacketUs: audio.mode === 'copy' && probe.audio ? probe.audio.packetUs : 0,
@@ -342,6 +429,8 @@ export function buildPlan(probe, settings) {
     // 元が同じフレームレートでも取りこぼさないよう、少しだけ緩める
     minFrameDeltaUs: Math.floor((1_000_000 / maxFps) * 0.95),
     keyframeIntervalUs: 2_000_000,
+    // 出だしと終わりをふわっとさせる。短い動画では短くする
+    fadeUs: settings.fade ? Math.min(400_000, Math.floor(trim.durationUs / 6)) : 0,
   };
 
   /** @type {Plan} */
@@ -372,5 +461,6 @@ function emptyVideoPlan() {
     maxFps: 30,
     minFrameDeltaUs: 33_333,
     keyframeIntervalUs: 2_000_000,
+    fadeUs: 0,
   };
 }

@@ -9,17 +9,23 @@ X に上げる動画を、投稿に向いた形に整えるブラウザの道具
 
 ## できること
 - **かたちを変える**：そのまま／横16:9／正方形／縦9:16。余白は**ぼかした背景**・単色・切り抜きから選べます
-- **長さを切る**：始まりと終わりを決めます
+- **いらないところを落とす**：タイムラインで切って、区間ごと落とせます。残りはつないで1本になります
+- **出だしと終わりをふわっと**：真っ暗から入って、真っ暗に抜けます
 - **画質とサイズ**：画質で決めるか、目標のサイズ（例：30MB）から逆算するか
 - **音はそのまま**：音声は作り直さずに詰め替えるので、劣化しません。消すこともできます
-- **テロップを焼き込む**：文字・出す時間・位置（上/中/下）・大きさ。Xは音を出さずに再生されることが多いので、ここが効きます
+- **テロップを焼き込む**：文字・出す時間・位置（上/中/下）・大きさ・上下の微調整。見せ方は3つ（白文字＋フチ／黒帯／色帯）。Xは音を出さずに再生されることが多いので、ここが効きます
 - **iPhone の動画を直す**：HEVC（iPhoneの既定）を H.264 に、縦撮りの回転を正しい向きに直します
 
 ## 使い方
 1. 動画を落とす（またはクリックして選ぶ）
-2. 右側で設定を変える。左側に仕上がりがそのまま出ます
-3. 「変換する」を押す。途中でやめられます
-4. 「保存する」を押して、出来たファイルを保存します
+2. 右側でかたちや画質を決める。左側に仕上がりがそのまま出ます
+3. タイムラインで整える
+   - 帯をクリックすると、そこへ飛びます
+   - 黄色いつまみを引くと、使うところの端が動きます
+   - 「ここで切る」で区間を2つに割り、いらないほうを選んで「この区間を落とす」
+   - 「ここに足す」でテロップを置き、色の帯をつかんで動かします
+4. 「変換する」を押す。途中でやめられます
+5. 「保存する」を押して、出来たファイルを保存します
 
 手元で動かす場合は、ESモジュールを読み込むためローカルサーバー経由で開いてください（例：`python3 -m http.server` → http://localhost:8000 、または `node tools/serve.mjs`）。
 
@@ -75,7 +81,7 @@ X に上げる動画を、投稿に向いた形に整えるブラウザの道具
 **Shitagoshirae** gets a video ready to post on X — reshape it, pad it with a blurred background, trim it, hit a target file size, and burn in captions. **Your video is never uploaded.** Everything happens inside your browser.
 
 - **Use it:** https://aiimpl.github.io/shitagoshirae/ — no sign-up, no server, nothing to install.
-- **What it does:** shape (keep / 16:9 / 1:1 / 9:16) with blurred, solid or cropped padding; trim; quality or target-size encoding; audio carried through untouched (or muted); burned-in captions. It also converts iPhone HEVC to H.264 and bakes in rotation, which is what usually breaks portrait phone videos.
+- **What it does:** shape (keep / 16:9 / 1:1 / 9:16) with blurred, solid or cropped padding; a timeline where you split the clip and drop the parts you do not want; fade in/out; quality or target-size encoding; audio carried through untouched (or muted); burned-in captions in three styles (outlined, black bar, colour chip). It also converts iPhone HEVC to H.264 and bakes in rotation, which is what usually breaks portrait phone videos.
 - **Browsers:** Chrome, Edge, Safari 26+, and desktop Firefox. Firefox on Android has no WebCodecs and cannot run it. The page tells you plainly when it cannot work.
 - **Speed:** a 40-second 1920×1080 clip takes about 5 seconds to re-encode at 1080p on an M5 Mac in Chrome — roughly 8× faster than real time.
 - **How it works:** WebCodecs for decode/encode, [mediabunny](https://github.com/Vanilagy/mediabunny) for MP4 reading and writing, WebGL2 for the blur and layout, all inside a Web Worker. No server, no API, no upload.

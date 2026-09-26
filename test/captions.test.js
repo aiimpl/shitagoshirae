@@ -19,7 +19,7 @@ const measure = (text, font) => {
 
 /** @returns {import('../src/types.js').Cue} */
 function cue(over) {
-  return { id: 'a', text: 'こんにちは', startUs: 0, endUs: 3_000_000, position: 'bottom', size: 1, outline: true, ...over };
+  return { id: 'a', text: 'こんにちは', startUs: 0, endUs: 3_000_000, position: 'bottom', size: 1, style: 'outline', nudge: 0, ...over };
 }
 
 test('重なったテロップは、中身が変わる時点で区切られる', () => {
@@ -132,4 +132,18 @@ test('帯を探すとき、前に戻らずに進める', () => {
   }
   assert.ok(found > 4000);
   assert.equal(pickBand(bands, 1_500_000, 0).index, -1);
+});
+
+test('黒帯や色帯を選ぶと、帯の絵が先に描かれる', () => {
+  const segments = buildCaptionTimeline([cue({ text: '帯つき', style: 'bar' })]);
+  const [band] = layoutCaptionSegment(segments[0], { width: 1280, height: 720, fontFamily: 'sans-serif' }, measure);
+  assert.equal(band.ops[0].kind, 'rect');
+  assert.equal(band.ops[1].kind, 'text');
+  assert.equal(band.ops[1].stroke, null);
+});
+
+test('上下の微調整が位置に効く', () => {
+  const base = layoutCaptionSegment(buildCaptionTimeline([cue({})])[0], { width: 1280, height: 720, fontFamily: 'sans-serif' }, measure)[0];
+  const moved = layoutCaptionSegment(buildCaptionTimeline([cue({ nudge: -0.1 })])[0], { width: 1280, height: 720, fontFamily: 'sans-serif' }, measure)[0];
+  assert.ok(moved.rect.y < base.rect.y);
 });

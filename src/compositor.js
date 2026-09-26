@@ -58,6 +58,14 @@ void main() {
   outColor = sum;
 }`;
 
+const FRAG_SOLID = `#version 300 es
+precision highp float;
+uniform vec4 uColor;
+out vec4 outColor;
+void main() {
+  outColor = uColor;
+}`;
+
 // ぼかしは縮めた絵にかける。8分の1なら、見た目は同じで処理は64分の1で済む
 const BLUR_SCALE = 8;
 
@@ -81,6 +89,7 @@ export class Compositor {
     this.gl = gl;
     this.blit = makeProgram(gl, VERT, FRAG_BLIT);
     this.blur = makeProgram(gl, VERT, FRAG_BLUR);
+    this.solid = makeProgram(gl, VERT, FRAG_SOLID);
     this.quad = makeQuad(gl);
     this.srcTex = makeTexture(gl);
     /** 同じ絵を何度も読み込まないための控え。key → テクスチャ @type {Map<string, WebGLTexture>} */
@@ -110,9 +119,10 @@ export class Compositor {
    * （transferToImageBitmap は WebGL の面では通らない環境があるため、キャンバスのまま渡す）
    * @param {VideoFrame} frame
    * @param {{ bitmap: ImageBitmap, rect: Rect, key: string }[]} overlays  同時に出すテロップ（上・中・下）
+   * @param {number} [fade] そのままなら1、真っ暗なら0（出だしと終わりに使う）
    * @returns {OffscreenCanvas}
    */
-  draw(frame, overlays) {
+  draw(frame, overlays, fade = 1) {
     const gl = this.gl;
     const v = this.video;
     if (!v) {
@@ -145,9 +155,32 @@ export class Compositor {
       const tex = this.overlayTexture(overlay);
       this.drawTexture(tex, overlay.rect, { x: 0, y: 0, w: 1, h: 1 }, identityUv(), 1);
     }
+    if (fade < 1) {
+      // 上から黒をかぶせて、ふわっと出し入れする
+      gl.useProgram(this.blit.program);
+      this.drawSolid([0, 0, 0, 1 - Math.max(0, Math.min(1, fade))]);
+    }
     // 描いた内容を確実に出してから返す
     gl.flush();
     return this.canvas;
+  }
+
+  /**
+   * 画面いっぱいを単色で塗る（ふわっと出し入れするときに使う）
+   * @param {[number, number, number, number]} rgba
+   */
+  drawSolid(rgba) {
+    const gl = this.gl;
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.useProgram(this.solid.program);
+    gl.uniform4f(this.solid.uniforms.uRect, 0, 0, this.width, this.height);
+    gl.uniform2f(this.solid.uniforms.uOut, this.width, this.height);
+    gl.uniform4f(this.solid.uniforms.uUvRect, 0, 0, 1, 1);
+    gl.uniform1f(this.solid.uniforms.uFlip, 1);
+    gl.uniform4f(this.solid.uniforms.uColor, rgba[0], rgba[1], rgba[2], rgba[3]);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
   }
 
   /**
@@ -286,6 +319,7 @@ export class Compositor {
     gl.deleteTexture(this.fboB.tex);
     gl.deleteProgram(this.blit.program);
     gl.deleteProgram(this.blur.program);
+    gl.deleteProgram(this.solid.program);
     gl.deleteVertexArray(this.quad);
     // 明け渡し（使い終わったことをブラウザに伝える）
     gl.getExtension('WEBGL_lose_context')?.loseContext();

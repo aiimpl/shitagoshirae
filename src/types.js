@@ -74,6 +74,14 @@
  */
 
 /**
+ * 使う区間。いらないところを落とすために、いくつも持てる
+ * @typedef {Object} Segment
+ * @property {string} id
+ * @property {number} startUs
+ * @property {number} endUs
+ */
+
+/**
  * 画面で選んだ設定
  * @typedef {Object} Settings
  * @property {Shape} shape
@@ -81,8 +89,8 @@
  * @property {string} padColor        '#101418' のような文字列
  * @property {number} blurStrength    0〜1
  * @property {'720p'|'1080p'|'source'} resolution
- * @property {number} inUs
- * @property {number} outUs
+ * @property {Segment[]} segments     つないで書き出す区間（元の動画の時刻）
+ * @property {boolean} fade           最初と最後をふわっと出し入れする
  * @property {'size'|'quality'} sizeMode
  * @property {number} targetBytes
  * @property {'low'|'medium'|'high'} quality
@@ -100,9 +108,18 @@
  * @property {number} endUs
  * @property {'top'|'middle'|'bottom'} position
  * @property {number} size            1 が既定（出力の高さの約5%）
- * @property {boolean} outline
+ * @property {CueStyle} style         見せ方
+ * @property {number} nudge           位置の微調整（出力の高さに対する割合。-0.4〜0.4）
  * @property {string} [color]
  * @property {string} [outlineColor]
+ */
+
+/**
+ * テロップの見せ方
+ *  outline＝白文字に黒フチ（テレビのテロップ風）
+ *  bar＝黒い帯に白文字（字幕風。読みやすさ優先）
+ *  chip＝色の帯に白文字（見出し風）
+ * @typedef {'outline'|'bar'|'chip'} CueStyle
  */
 
 /**
@@ -143,17 +160,26 @@
  * @property {number} maxFps
  * @property {number} minFrameDeltaUs     これより短い間隔のフレームは捨てる
  * @property {number} keyframeIntervalUs
+ * @property {number} fadeUs              最初と最後をふわっとさせる長さ（0なら何もしない）
  */
 
 /**
- * @typedef {Object} PlanTrim
- * @property {number} inUs           映像の開始（フレーム単位で正確）
- * @property {number} outUs
- * @property {number} durationUs
+ * 書き出す区間ひとつぶん
+ * @typedef {Object} PlanCut
+ * @property {number} inUs           元の動画での開始
+ * @property {number} outUs          元の動画での終わり
+ * @property {number} outStartUs     出力での開始（前の区間の長さを足したもの）
  * @property {number} decodeFromUs   直前のキーフレーム。復号はここから始める
  * @property {number} audioInUs      音声パケットの切れ目に切り上げた開始
  * @property {number} audioOutUs     切れ目に切り下げた終わり
  * @property {number} avOffsetUs     audioInUs - inUs（0以上）
+ */
+
+/**
+ * @typedef {Object} PlanTrim
+ * @property {PlanCut[]} cuts        つなぐ順に並んでいる
+ * @property {number} durationUs     出来上がりの長さ（合計）
+ * @property {number} avOffsetUs     いちばん大きい音のずれ
  */
 
 /**

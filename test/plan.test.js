@@ -6,7 +6,10 @@ import {
   bitrateForQuality,
   bitrateForTargetSize,
   estimateOutputBytes,
-  planTrim,
+  planCut,
+  planCuts,
+  normalizeSegments,
+  toOutputTimes,
   decideAudioCopy,
   h264Level,
   codecCandidates,
@@ -52,8 +55,8 @@ function sampleSettings(over = {}) {
     padColor: '#101418',
     blurStrength: 0.5,
     resolution: '1080p',
-    inUs: 0,
-    outUs: 40_000_000,
+    segments: [{ id: 's0', startUs: 0, endUs: 40_000_000 }],
+    fade: false,
     sizeMode: 'quality',
     targetBytes: 30 * 1024 * 1024,
     quality: 'high',
@@ -92,7 +95,7 @@ test('見積もったサイズは、狙ったサイズに近い', () => {
 });
 
 test('切り出しは、復号をひとつ前のキーフレームから始める', () => {
-  const t = planTrim({
+  const t = planCut({
     inUs: 5_030_000,
     outUs: 9_000_000,
     durationUs: 40_000_000,
@@ -102,22 +105,22 @@ test('切り出しは、復号をひとつ前のキーフレームから始め�
   });
   assert.equal(t.decodeFromUs, 4_000_000);
   assert.equal(t.inUs, 5_030_000);
-  assert.equal(t.durationUs, 3_970_000);
+  assert.equal(t.outUs - t.inUs, 3_970_000);
   // 音声は切れ目に切り上げるので、必ず映像の開始以降になる
   assert.ok(t.audioInUs >= t.inUs);
   assert.ok(t.avOffsetUs >= 0 && t.avOffsetUs < 21_333);
 });
 
 test('音声がないときは、ずれもない', () => {
-  const t = planTrim({ inUs: 1_000_000, outUs: 2_000_000, durationUs: 5_000_000, keyframeUs: [0], audioPacketUs: 0, audioFirstUs: 0 });
+  const t = planCut({ inUs: 1_000_000, outUs: 2_000_000, durationUs: 5_000_000, keyframeUs: [0], audioPacketUs: 0, audioFirstUs: 0 });
   assert.equal(t.audioInUs, t.inUs);
   assert.equal(t.avOffsetUs, 0);
 });
 
 test('終わりが長さを超えていたら、長さに収める', () => {
-  const t = planTrim({ inUs: 0, outUs: 99_000_000, durationUs: 40_000_000, keyframeUs: [0], audioPacketUs: 0, audioFirstUs: 0 });
+  const t = planCut({ inUs: 0, outUs: 99_000_000, durationUs: 40_000_000, keyframeUs: [0], audioPacketUs: 0, audioFirstUs: 0 });
   assert.equal(t.outUs, 40_000_000);
-  assert.equal(t.durationUs, 40_000_000);
+  assert.equal(t.outUs - t.inUs, 40_000_000);
 });
 
 test('そのまま通せる音声は AAC-LC の1〜2チャンネルだけ', () => {
@@ -170,14 +173,14 @@ test('計画は Worker へそのまま渡せる（素の値だけでできてい
 });
 
 test('短すぎる動画は止める', () => {
-  const plan = buildPlan(sampleProbe({ durationUs: 300_000 }), sampleSettings({ outUs: 300_000 }));
+  const plan = buildPlan(sampleProbe({ durationUs: 300_000 }), sampleSettings({ segments: [{ id: 's0', startUs: 0, endUs: 300_000 }] }));
   assert.equal(plan.blocked, true);
   assert.ok(plan.warnings.some((w) => w.code === 'w.tooShort'));
 });
 
 test('2分20秒を超えると、無料アカウント向けの注意が出る（止めはしない）', () => {
   const long = 200_000_000;
-  const plan = buildPlan(sampleProbe({ durationUs: long }), sampleSettings({ outUs: long }));
+  const plan = buildPlan(sampleProbe({ durationUs: long }), sampleSettings({ segments: [{ id: 's0', startUs: 0, endUs: long }] }));
   assert.equal(plan.blocked, false);
   assert.ok(plan.warnings.some((w) => w.code === 'w.durationOverFree'));
 });
@@ -216,4 +219,73 @@ test('Xの制限の数値が、調べたとおりに置かれている', () => {
   assert.equal(X.maxDurationFreeUs, 140_000_000);
   assert.equal(X.maxBytesFree, 512 * 1024 * 1024);
   assert.equal(X.maxFps, 60);
+});
+
+test('区間は、時刻の順に並べて重なりをまとめる', () => {
+  const ranges = normalizeSegments([
+    { id: 'b', startUs: 5_000_000, endUs: 8_000_000 },
+    { id: 'a', startUs: 0, endUs: 6_000_000 },
+    { id: 'c', startUs: 12_000_000, endUs: 9_000_000 },
+    { id: 'd', startUs: 20_000_000, endUs: 25_000_000 },
+  ], 40_000_000);
+  assert.deepEqual(ranges, [
+    { startUs: 0, endUs: 8_000_000 },
+    { startUs: 20_000_000, endUs: 25_000_000 },
+  ]);
+});
+
+test('いらないところを落とすと、出来上がりの長さが縮む', () => {
+  const trim = planCuts({
+    segments: [
+      { id: 'a', startUs: 0, endUs: 10_000_000 },
+      { id: 'b', startUs: 30_000_000, endUs: 40_000_000 },
+    ],
+    durationUs: 40_000_000,
+    keyframeUs: [0, 10_000_000, 20_000_000, 30_000_000],
+    audioPacketUs: 0,
+    audioFirstUs: 0,
+  });
+  assert.equal(trim.cuts.length, 2);
+  assert.equal(trim.durationUs, 20_000_000);
+  assert.equal(trim.cuts[0].outStartUs, 0);
+  assert.equal(trim.cuts[1].outStartUs, 10_000_000);
+  assert.equal(trim.cuts[1].decodeFromUs, 30_000_000);
+});
+
+test('テロップの時刻は、落とした区間をまたぐと切り分けられる', () => {
+  const trim = planCuts({
+    segments: [
+      { id: 'a', startUs: 0, endUs: 10_000_000 },
+      { id: 'b', startUs: 30_000_000, endUs: 40_000_000 },
+    ],
+    durationUs: 40_000_000,
+    keyframeUs: [0],
+    audioPacketUs: 0,
+    audioFirstUs: 0,
+  });
+  // 5秒〜35秒のテロップ → 前半（5〜10秒）と後半（30〜35秒）に分かれる
+  const ranges = toOutputTimes(5_000_000, 35_000_000, trim.cuts);
+  assert.deepEqual(ranges, [
+    { startUs: 5_000_000, endUs: 10_000_000 },
+    { startUs: 10_000_000, endUs: 15_000_000 },
+  ]);
+  // 落としたところだけにかかるテロップは、どこにも出ない
+  assert.deepEqual(toOutputTimes(15_000_000, 20_000_000, trim.cuts), []);
+});
+
+test('区間がひとつもないと、変換を止める', () => {
+  const plan = buildPlan(sampleProbe(), sampleSettings({ segments: [] }));
+  assert.equal(plan.blocked, true);
+  assert.ok(plan.warnings.some((w) => w.code === 'w.noRange'));
+});
+
+test('ふわっと出し入れは、短い動画では短くなる', () => {
+  const short = buildPlan(sampleProbe({ durationUs: 1_200_000 }), sampleSettings({
+    fade: true,
+    segments: [{ id: 's0', startUs: 0, endUs: 1_200_000 }],
+  }));
+  assert.ok(short.video.fadeUs > 0);
+  assert.ok(short.video.fadeUs <= 200_000);
+  const off = buildPlan(sampleProbe(), sampleSettings({ fade: false }));
+  assert.equal(off.video.fadeUs, 0);
 });

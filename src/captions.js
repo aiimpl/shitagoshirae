@@ -70,7 +70,7 @@ export function buildCaptionTimeline(cues) {
  */
 function keyOf(cues) {
   return cues
-    .map((c) => `${c.position}|${c.size}|${c.outline ? 1 : 0}|${c.color || ''}|${c.outlineColor || ''}|${c.text}`)
+    .map((c) => `${c.position}|${c.size}|${c.style}|${c.nudge}|${c.color || ''}|${c.outlineColor || ''}|${c.text}`)
     .sort()
     .join('');
 }
@@ -104,37 +104,52 @@ export function layoutCaptionSegment(segment, out, measureText) {
  * @returns {CaptionBand}
  */
 function layoutOne(cues, position, segment, out, measureText) {
-  const maxWidth = Math.round(out.width * (1 - SAFE_INSET * 2));
+  const style = cues[0].style || 'outline';
+  // 帯のある見せ方は、文字のまわりに余白をとる
+  const padX = Math.round(out.height * (style === 'outline' ? 0.012 : 0.026));
+  const padY = Math.round(out.height * (style === 'outline' ? 0.012 : 0.018));
+  const maxWidth = Math.round(out.width * (1 - SAFE_INSET * 2)) - padX * 2;
   /** @type {{ text: string, font: string, size: number, cue: Cue }[]} */
   const lines = [];
   for (const cue of cues) {
     const size = Math.max(14, Math.round(out.height * 0.05 * (cue.size || 1)));
-    const font = `700 ${size}px ${out.fontFamily}`;
+    const font = `800 ${size}px ${out.fontFamily}`;
     for (const text of wrapText(cue.text, maxWidth, font, measureText)) {
       lines.push({ text, font, size, cue });
     }
   }
-  const pad = Math.round(out.height * 0.012);
   let width = 0;
-  let height = pad;
+  let height = padY;
   for (const line of lines) {
-    width = Math.max(width, Math.ceil(measureText(line.text, line.font)) + pad * 2);
+    width = Math.max(width, Math.ceil(measureText(line.text, line.font)) + padX * 2);
     height += Math.round(line.size * 1.35);
   }
-  height += pad;
+  height += padY;
   width = Math.min(out.width, Math.max(width, 2));
 
   const x = Math.round((out.width - width) / 2);
-  const y = position === 'top'
+  const nudge = Math.round(out.height * clamp(cues[0].nudge || 0, -0.4, 0.4));
+  const baseY = position === 'top'
     ? Math.round(out.height * SAFE_INSET)
     : position === 'middle'
       ? Math.round((out.height - height) / 2)
       // 下は、Xの画面で文字や操作が重なるぶんだけ上げる
       : Math.round(out.height * (1 - SAFE_INSET * 1.6) - height);
+  const y = Math.max(0, Math.min(out.height - height, baseY + nudge));
 
   /** @type {DrawOp[]} */
   const ops = [];
-  let cursorY = pad;
+  if (style !== 'outline') {
+    ops.push({
+      kind: 'rect',
+      x: 0,
+      y: 0,
+      w: width,
+      h: height,
+      fill: style === 'chip' ? (cues[0].color || '#ff5a45') : 'rgba(0,0,0,0.78)',
+    });
+  }
+  let cursorY = padY;
   for (const line of lines) {
     const lineHeight = Math.round(line.size * 1.35);
     ops.push({
@@ -143,9 +158,9 @@ function layoutOne(cues, position, segment, out, measureText) {
       x: Math.round(width / 2),
       y: cursorY + Math.round(lineHeight / 2),
       font: line.font,
-      fill: line.cue.color || '#ffffff',
-      stroke: line.cue.outline === false ? null : (line.cue.outlineColor || '#000000'),
-      strokeWidth: Math.max(2, Math.round(line.size * 0.14)),
+      fill: style === 'outline' ? (line.cue.color || '#ffffff') : '#ffffff',
+      stroke: style === 'outline' ? (line.cue.outlineColor || '#000000') : null,
+      strokeWidth: Math.max(2, Math.round(line.size * 0.16)),
     });
     cursorY += lineHeight;
   }
@@ -157,6 +172,15 @@ function layoutOne(cues, position, segment, out, measureText) {
     rect: { x, y: Math.max(0, y), w: width, h: height },
     ops,
   };
+}
+
+/**
+ * @param {number} v
+ * @param {number} min
+ * @param {number} max
+ */
+function clamp(v, min, max) {
+  return Math.max(min, Math.min(max, v));
 }
 
 /**
@@ -242,7 +266,8 @@ export function parseSrt(text) {
       endUs: times[1],
       position: 'bottom',
       size: 1,
-      outline: true,
+      style: 'outline',
+      nudge: 0,
     });
   }
   return { cues, errors };

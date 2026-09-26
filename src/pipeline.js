@@ -83,6 +83,7 @@ export async function run(file, plan, captions, hooks) {
     },
     (err) => { encodeError = err; },
   );
+  let openFrames = 0;
   const codecString = await encoder.open();
   hooks.onOpened?.({
     codecString,
@@ -91,15 +92,9 @@ export async function run(file, plan, captions, hooks) {
     audio: audioSource ? 'copy' : 'drop',
   });
 
-  const audioPump = audioTrack && audioSource
-    ? new AudioCopyPump(audioTrack, audioSource, plan.trim)
-    : null;
-  await audioPump?.open();
-
   const sink = new VideoSampleSink(videoTrack);
   const totalUs = Math.max(1, plan.trim.durationUs);
   let frames = 0;
-  let openFrames = 0;
   let lastOutUs = -1;
   let lastKeyUs = -Infinity;
   let lastDurationUs = 0;
@@ -107,67 +102,80 @@ export async function run(file, plan, captions, hooks) {
   let cancelled = false;
 
   try {
-    for await (const sample of sink.samples(plan.trim.decodeFromUs / 1e6, plan.trim.outUs / 1e6)) {
-      if (hooks.isCancelled()) {
-        sample.close();
-        cancelled = true;
+    // 使う区間を順につないでいく。出力の時刻は、前の区間の長さを足したもの
+    for (const cut of plan.trim.cuts) {
+      if (cancelled) {
         break;
       }
-      if (encodeError) {
-        sample.close();
-        throw encodeError;
-      }
-      const srcUs = sample.microsecondTimestamp;
-      if (srcUs < plan.trim.inUs) {
-        sample.close();
-        continue;
-      }
-      if (srcUs >= plan.trim.outUs) {
-        sample.close();
-        break;
-      }
-      const outUs = srcUs - plan.trim.inUs;
-      if (outUs <= lastOutUs) {
-        sample.close();
-        continue;
-      }
-      if (frames > 0 && outUs - lastOutUs < plan.video.minFrameDeltaUs) {
-        sample.close();
-        continue;
-      }
+      const pump = audioTrack && audioSource ? new AudioCopyPump(audioTrack, audioSource, cut) : null;
+      await pump?.open();
 
-      const overlays = pickCaptions(captions, outUs);
-      const duration = sample.microsecondDuration || plan.video.minFrameDeltaUs;
-      const frame = sample.toVideoFrame();
-      openFrames++;
-      /** @type {OffscreenCanvas} */
-      let canvas;
-      try {
-        canvas = compositor.draw(frame, overlays);
-      } finally {
-        frame.close();
-        openFrames--;
-        sample.close();
-      }
+      for await (const sample of sink.samples(cut.decodeFromUs / 1e6, cut.outUs / 1e6)) {
+        if (hooks.isCancelled()) {
+          sample.close();
+          cancelled = true;
+          break;
+        }
+        if (encodeError) {
+          sample.close();
+          throw encodeError;
+        }
+        const srcUs = sample.microsecondTimestamp;
+        if (srcUs < cut.inUs) {
+          sample.close();
+          continue;
+        }
+        if (srcUs >= cut.outUs) {
+          sample.close();
+          break;
+        }
+        const outUs = cut.outStartUs + (srcUs - cut.inUs);
+        if (outUs <= lastOutUs) {
+          sample.close();
+          continue;
+        }
+        if (frames > 0 && outUs - lastOutUs < plan.video.minFrameDeltaUs) {
+          sample.close();
+          continue;
+        }
 
-      const outFrame = new VideoFrame(canvas, { timestamp: outUs, duration });
-      const keyFrame = frames === 0 || outUs - lastKeyUs >= plan.video.keyframeIntervalUs;
-      await encoder.push(outFrame, keyFrame);
-      outFrame.close();
-      if (keyFrame) {
-        lastKeyUs = outUs;
-      }
-      lastOutUs = outUs;
-      lastDurationUs = duration;
-      frames++;
+        const overlays = pickCaptions(captions, outUs);
+        const duration = sample.microsecondDuration || plan.video.minFrameDeltaUs;
+        const frame = sample.toVideoFrame();
+        openFrames++;
+        /** @type {OffscreenCanvas} */
+        let canvas;
+        try {
+          canvas = compositor.draw(frame, overlays, fadeAt(plan, outUs, totalUs));
+        } finally {
+          frame.close();
+          openFrames--;
+          sample.close();
+        }
 
-      await audioPump?.pumpUntil(outUs);
+        const outFrame = new VideoFrame(canvas, { timestamp: outUs, duration });
+        // 区間のつなぎ目は必ずキーフレームにする（切り替わりを綺麗に見せるため）
+        const keyFrame = frames === 0
+          || outUs - lastKeyUs >= plan.video.keyframeIntervalUs
+          || outUs === cut.outStartUs;
+        await encoder.push(outFrame, keyFrame);
+        outFrame.close();
+        if (keyFrame) {
+          lastKeyUs = outUs;
+        }
+        lastOutUs = outUs;
+        lastDurationUs = duration;
+        frames++;
 
-      const now = performance.now();
-      if (now - lastReport > 100) {
-        lastReport = now;
-        hooks.onProgress?.({ mediaUs: outUs, totalUs, frames, encodedBytes, openFrames: encoder.queueSize });
+        await pump?.pumpUntil(outUs);
+
+        const now = performance.now();
+        if (now - lastReport > 100) {
+          lastReport = now;
+          hooks.onProgress?.({ mediaUs: outUs, totalUs, frames, encodedBytes, openFrames: encoder.queueSize });
+        }
       }
+      await pump?.finish();
     }
 
     if (cancelled) {
@@ -183,7 +191,6 @@ export async function run(file, plan, captions, hooks) {
     if (encodeError) {
       throw encodeError;
     }
-    await audioPump?.finish();
     await output.finalize();
     compositor.dispose();
     encoder.abort();
@@ -213,6 +220,23 @@ export async function run(file, plan, captions, hooks) {
 }
 
 /**
+ * 出だしと終わりのふわっと具合（0＝真っ暗、1＝そのまま）
+ * @param {Plan} plan
+ * @param {number} outUs
+ * @param {number} totalUs
+ * @returns {number}
+ */
+function fadeAt(plan, outUs, totalUs) {
+  const span = plan.video.fadeUs;
+  if (!span) {
+    return 1;
+  }
+  const inK = Math.min(1, outUs / span);
+  const outK = Math.min(1, Math.max(0, totalUs - outUs) / span);
+  return Math.max(0, Math.min(1, Math.min(inK, outK)));
+}
+
+/**
  * いまの時刻に出すテロップを全部集める（上・中・下が同時に出ることがある）
  * @param {import('./types.js').CaptionBitmap[]} captions
  * @param {number} tUs
@@ -235,7 +259,7 @@ export class AudioCopyPump {
   /**
    * @param {any} track
    * @param {EncodedAudioPacketSource} sink
-   * @param {import('./types.js').PlanTrim} trim
+   * @param {import('./types.js').PlanCut} trim  区間ひとつぶん
    */
   constructor(track, sink, trim) {
     this.track = track;
@@ -287,7 +311,7 @@ export class AudioCopyPump {
         this.done = true;
         break;
       }
-      if (srcUs - this.trim.inUs > untilUs) {
+      if (this.outAt(srcUs) > untilUs) {
         break;
       }
       this.writeShifted(this.pending, srcUs);
@@ -311,13 +335,23 @@ export class AudioCopyPump {
   }
 
   /**
+   * 元の時刻を、出来上がりでの時刻に移す
+   * 区間をつなぐので、前の区間の長さ（outStartUs）を足す
+   * @param {number} srcUs
+   * @returns {number}
+   */
+  outAt(srcUs) {
+    return this.trim.outStartUs + (srcUs - this.trim.inUs);
+  }
+
+  /**
    * 中身のバイト列はそのままに、時刻だけずらして書く
    * @param {any} packet
    * @param {number} srcUs
    */
   writeShifted(packet, srcUs) {
     // 中身は触らず、時刻だけずらした写しを作る
-    const shifted = packet.clone({ timestamp: (srcUs - this.trim.inUs) / 1e6 });
+    const shifted = packet.clone({ timestamp: this.outAt(srcUs) / 1e6 });
     this.writes.push(this.sink.add(shifted, this.meta));
   }
 }

@@ -3,7 +3,7 @@
 
 import { t, lang, setLang, applyStatic } from './i18n.js';
 import { probeFile, checkBrowser } from './probe.js';
-import { buildPlan, estimateOutputBytes } from './plan.js';
+import { buildPlan, estimateOutputBytes, toOutputTimes } from './plan.js';
 import { buildCaptionTimeline, layoutCaptionSegment } from './captions.js';
 import { rasterizeBands, makeTextMeasurer, closeBitmaps, loadFonts } from './caption-raster.js';
 import { startConversion, CancelledError, outputName, warmUp } from './convert.js';
@@ -23,8 +23,8 @@ const settings = {
   padColor: '#101418',
   blurStrength: 0.6,
   resolution: '720p',
-  inUs: 0,
-  outUs: 0,
+  segments: [],
+  fade: false,
   sizeMode: 'quality',
   targetBytes: 30 * 1024 * 1024,
   quality: 'high',
@@ -51,22 +51,21 @@ const measureText = makeTextMeasurer();
 
 /** @type {string|null} */
 let selectedCueId = null;
+/** @type {string|null} */
+let selectedSegmentId = null;
 
 const timeline = new Timeline($('timeline'), {
-  onTrim: (inUs, outUs) => {
-    settings.inUs = inUs;
-    settings.outUs = outUs;
-    seekPreview(inUs);
-    refresh();
-  },
+  onSegments: () => refresh(),
   onCues: () => {
     drawCueEditor();
     refresh();
   },
-  onSelect: (id) => {
-    selectedCueId = id;
-    timeline.select(id);
+  onSelect: (kind, id) => {
+    selectedCueId = kind === 'cue' ? id : null;
+    selectedSegmentId = kind === 'segment' ? id : null;
+    timeline.select(kind, id);
     drawCueEditor();
+    paintSegmentButtons();
   },
   onSeek: (us) => seekPreview(us),
 });
@@ -79,6 +78,7 @@ function seekPreview(us) {
     return;
   }
   video.currentTime = Math.max(0, Math.min(probe.durationUs - 1000, us)) / 1e6;
+  paintSegmentButtons();
 }
 
 // ---- 言語 ----
@@ -141,6 +141,10 @@ segment($('segQuality'), settings.quality, (v) => {
   settings.quality = /** @type {any} */ (v);
   refresh();
 });
+segment($('segFade'), settings.fade ? 'on' : 'off', (v) => {
+  settings.fade = v === 'on';
+  refresh();
+});
 segment($('segAudio'), settings.audio, (v) => {
   settings.audio = /** @type {any} */ (v);
   refresh();
@@ -166,15 +170,56 @@ $('bAddCue').onclick = () => {
     endUs: Math.min(probe.durationUs, startUs + 2_500_000),
     position: /** @type {const} */ ('bottom'),
     size: 1,
-    outline: true,
+    style: /** @type {const} */ ('outline'),
+    nudge: 0,
   };
   settings.cues.push(cue);
   selectedCueId = cue.id;
+  selectedSegmentId = null;
   timeline.setCues(settings.cues);
-  timeline.select(cue.id);
+  timeline.select('cue', cue.id);
   drawCueEditor();
   refresh();
 };
+
+// いま見ているところで、区間を2つに割る
+$('bSplit').onclick = () => {
+  const head = Math.round(video.currentTime * 1e6);
+  const target = settings.segments.find((s) => head > s.startUs + 200_000 && head < s.endUs - 200_000);
+  if (!target) {
+    return;
+  }
+  const tail = { id: `s${Date.now()}`, startUs: head, endUs: target.endUs };
+  target.endUs = head;
+  settings.segments.push(tail);
+  settings.segments.sort((a, b) => a.startUs - b.startUs);
+  selectedSegmentId = tail.id;
+  timeline.setSegments(settings.segments);
+  timeline.select('segment', tail.id);
+  paintSegmentButtons();
+  refresh();
+};
+
+// 選んでいる区間を落とす
+$('bDropSeg').onclick = () => {
+  if (!selectedSegmentId || settings.segments.length < 2) {
+    return;
+  }
+  settings.segments = settings.segments.filter((s) => s.id !== selectedSegmentId);
+  selectedSegmentId = null;
+  timeline.setSegments(settings.segments);
+  timeline.select(null, null);
+  paintSegmentButtons();
+  refresh();
+};
+
+/** 区間まわりのボタンの効き具合を整える */
+function paintSegmentButtons() {
+  const head = Math.round(video.currentTime * 1e6);
+  const canSplit = settings.segments.some((s) => head > s.startUs + 200_000 && head < s.endUs - 200_000);
+  /** @type {HTMLButtonElement} */ ($('bSplit')).disabled = !canSplit;
+  /** @type {HTMLButtonElement} */ ($('bDropSeg')).disabled = !selectedSegmentId || settings.segments.length < 2;
+}
 
 $('bConvert').onclick = () => convert();
 $('bCancel').onclick = () => job?.cancel();
@@ -239,22 +284,22 @@ async function load(file) {
     }
     state.file = file;
     state.probe = probe;
-    settings.inUs = 0;
-    settings.outUs = probe.durationUs;
-    // 元が縦長なら、そのままの形を既定にする
     settings.shape = 'keep';
     video.src = URL.createObjectURL(file);
     video.currentTime = 0;
     await video.play().catch(() => undefined);
     renderMeta($('inmeta'), describeProbe(probe));
     selectedCueId = null;
-    timeline.setRange(probe.durationUs, 0, probe.durationUs);
+    selectedSegmentId = null;
+    settings.segments = [{ id: 's0', startUs: 0, endUs: probe.durationUs }];
+    timeline.setRange(probe.durationUs, settings.segments);
     timeline.setCues(settings.cues);
+    paintSegmentButtons();
     drawCueEditor();
     refresh();
     show('work');
     // コマ送りの絵は、画面を出してから作る（少し時間がかかるため）
-    timeline.buildThumbnails(video, probe.durationUs).catch(() => undefined);
+    timeline.buildThumbnails(video.src, probe.durationUs).catch(() => undefined);
   } catch (err) {
     console.error(err);
     fail(t('err.read'));
@@ -312,11 +357,34 @@ function refresh() {
     [t('in.bitrate'), `${(plan.video.bitrateBps / 1e6).toFixed(1)} Mbps`],
     [t('out.estimate'), formatBytes(estimated)],
   ]);
-  $('trimLabel').textContent = `${formatClock(plan.trim.inUs)} 〜 ${formatClock(plan.trim.outUs)}（${formatClock(plan.trim.durationUs)}）`;
+  $('trimLabel').textContent = plan.trim.cuts.length > 1
+    ? t('tl.cuts', plan.trim.cuts.length, formatClock(plan.trim.durationUs))
+    : t('tl.one', formatClock(plan.trim.durationUs));
   $('audioNote').textContent = plan.audio.mode === 'copy' ? '' : t(plan.audio.reason);
   renderWarnings($('warns'), plan.warnings);
   /** @type {HTMLButtonElement} */ ($('bConvert')).disabled = plan.blocked;
   $('estimate').textContent = plan.blocked ? '' : `${t('out.estimate')} ${formatBytes(estimated)}`;
+}
+
+/**
+ * テロップの時刻を、元の動画の時刻から出来上がりの時刻に移す
+ * 落とした区間にかかっていたら、残ったところだけに切り分ける
+ * @param {import('./types.js').Cue[]} cues
+ * @param {import('./types.js').PlanCut[]} cuts
+ * @returns {import('./types.js').Cue[]}
+ */
+function toOutputCues(cues, cuts) {
+  /** @type {import('./types.js').Cue[]} */
+  const out = [];
+  for (const cue of cues) {
+    if (!cue.text.trim()) {
+      continue;
+    }
+    for (const range of toOutputTimes(cue.startUs, cue.endUs, cuts)) {
+      out.push({ ...cue, id: `${cue.id}@${range.startUs}`, startUs: range.startUs, endUs: range.endUs });
+    }
+  }
+  return out;
 }
 
 async function convert() {
@@ -332,8 +400,9 @@ async function convert() {
   /** @type {import('./types.js').CaptionBitmap[]} */
   let captions = [];
   try {
-    if (settings.cues.length) {
-      const bands = buildCaptionTimeline(settings.cues).flatMap((seg) => layoutCaptionSegment(seg, {
+    const outCues = toOutputCues(settings.cues, plan.trim.cuts);
+    if (outCues.length) {
+      const bands = buildCaptionTimeline(outCues).flatMap((seg) => layoutCaptionSegment(seg, {
         width: plan.video.width,
         height: plan.video.height,
         fontFamily: FONT_FAMILY,

@@ -17,21 +17,23 @@ const SNAP_US = 50_000;
 export class Timeline {
   /**
    * @param {HTMLElement} root
-   * @param {{ onTrim: (inUs: number, outUs: number) => void,
+   * @param {{ onSegments: () => void,
    *           onCues: () => void,
-   *           onSelect: (id: string|null) => void,
+   *           onSelect: (kind: 'cue'|'segment'|null, id: string|null) => void,
    *           onSeek: (us: number) => void }} hooks
    */
   constructor(root, hooks) {
     this.root = root;
     this.hooks = hooks;
     this.durationUs = 0;
-    this.inUs = 0;
-    this.outUs = 0;
+    /** @type {import('./types.js').Segment[]} */
+    this.segments = [];
     /** @type {Cue[]} */
     this.cues = [];
     /** @type {string|null} */
-    this.selectedId = null;
+    this.selectedCue = null;
+    /** @type {string|null} */
+    this.selectedSegment = null;
     /** @type {HTMLVideoElement|null} */
     this.video = null;
 
@@ -40,11 +42,9 @@ export class Timeline {
         <div class="tl-strip" data-role="strip">
           <div class="tl-clip">
             <canvas class="tl-thumbs" data-role="thumbs"></canvas>
-            <div class="tl-dim" data-role="dimLeft"></div>
-            <div class="tl-dim" data-role="dimRight"></div>
+            <div data-role="gaps"></div>
           </div>
-          <div class="tl-handle" data-role="handleIn"><i></i></div>
-          <div class="tl-handle" data-role="handleOut"><i></i></div>
+          <div data-role="handles"></div>
           <div class="tl-head" data-role="head"></div>
         </div>
         <div class="tl-lane" data-role="lane"></div>
@@ -66,13 +66,17 @@ export class Timeline {
 
   /**
    * @param {number} durationUs
-   * @param {number} inUs
-   * @param {number} outUs
+   * @param {import('./types.js').Segment[]} segments
    */
-  setRange(durationUs, inUs, outUs) {
+  setRange(durationUs, segments) {
     this.durationUs = Math.max(1, durationUs);
-    this.inUs = inUs;
-    this.outUs = outUs;
+    this.segments = segments;
+    this.paint();
+  }
+
+  /** @param {import('./types.js').Segment[]} segments */
+  setSegments(segments) {
+    this.segments = segments;
     this.paint();
   }
 
@@ -82,10 +86,14 @@ export class Timeline {
     this.paintLane();
   }
 
-  /** @param {string|null} id */
-  select(id) {
-    this.selectedId = id;
-    this.paintLane();
+  /**
+   * @param {'cue'|'segment'|null} kind
+   * @param {string|null} id
+   */
+  select(kind, id) {
+    this.selectedCue = kind === 'cue' ? id : null;
+    this.selectedSegment = kind === 'segment' ? id : null;
+    this.paint();
   }
 
   /** 画面の位置（0〜1）を時刻にする @param {number} ratio */
@@ -113,13 +121,15 @@ export class Timeline {
 
     const down = (e) => {
       const target = /** @type {HTMLElement} */ (e.target);
-      const handle = target.closest('[data-role=handleIn],[data-role=handleOut]');
+      const handle = target.closest('[data-seg]');
       const block = target.closest('[data-cue]');
       if (handle) {
-        drag = { kind: handle.getAttribute('data-role') === 'handleIn' ? 'in' : 'out' };
+        const id = /** @type {string} */ (handle.getAttribute('data-seg'));
+        this.hooks.onSelect('segment', id);
+        drag = { kind: handle.getAttribute('data-edge') === 'start' ? 'seg-start' : 'seg-end', id };
       } else if (block) {
         const id = /** @type {string} */ (block.getAttribute('data-cue'));
-        this.hooks.onSelect(id);
+        this.hooks.onSelect('cue', id);
         const edge = target.getAttribute('data-edge');
         const cue = this.cues.find((c) => c.id === id);
         drag = {
@@ -131,12 +141,16 @@ export class Timeline {
         drag = { kind: 'seek' };
         this.hooks.onSeek(this.usAt(this.ratioOf(e)));
       } else if (target.closest('[data-role=lane]')) {
-        this.hooks.onSelect(null);
+        this.hooks.onSelect(null, null);
         return;
       } else {
         return;
       }
-      this.root.setPointerCapture?.(e.pointerId);
+      try {
+        this.root.setPointerCapture(e.pointerId);
+      } catch (err) {
+        // 押した指を捕まえられない場合（合成した出来事など）は、そのまま進める
+      }
       e.preventDefault();
     };
 
@@ -149,18 +163,18 @@ export class Timeline {
         this.hooks.onSeek(us);
         return;
       }
-      if (drag.kind === 'in') {
-        this.inUs = Math.min(us, this.outUs - MIN_CUE_US);
-        this.inUs = Math.max(0, this.inUs);
-        this.hooks.onTrim(this.inUs, this.outUs);
+      if (drag.kind.startsWith('seg-')) {
+        const segment = this.segments.find((x) => x.id === drag?.id);
+        if (!segment) {
+          return;
+        }
+        if (drag.kind === 'seg-start') {
+          segment.startUs = Math.max(0, Math.min(us, segment.endUs - MIN_CUE_US));
+        } else {
+          segment.endUs = Math.min(this.durationUs, Math.max(us, segment.startUs + MIN_CUE_US));
+        }
         this.paint();
-        return;
-      }
-      if (drag.kind === 'out') {
-        this.outUs = Math.max(us, this.inUs + MIN_CUE_US);
-        this.outUs = Math.min(this.durationUs, this.outUs);
-        this.hooks.onTrim(this.inUs, this.outUs);
-        this.paint();
+        this.hooks.onSegments();
         return;
       }
       const cue = this.cues.find((c) => c.id === drag?.id);
@@ -192,17 +206,35 @@ export class Timeline {
 
   /** 全体を描き直す */
   paint() {
-    const inPct = this.pct(this.inUs);
-    const outPct = this.pct(this.outUs);
-    this.el.dimLeft.style.width = `${inPct}%`;
-    this.el.dimRight.style.left = `${outPct}%`;
-    this.el.dimRight.style.width = `${Math.max(0, 100 - outPct)}%`;
-    this.el.handleIn.style.left = `${inPct}%`;
-    this.el.handleOut.style.left = `${outPct}%`;
-    this.el.handleIn.dataset.time = formatClock(this.inUs);
-    this.el.handleOut.dataset.time = formatClock(this.outUs);
+    this.paintSegments();
     this.paintTicks();
     this.paintLane();
+  }
+
+  /** 使う区間と、落とすところを描く */
+  paintSegments() {
+    const sorted = [...this.segments].sort((a, b) => a.startUs - b.startUs);
+    // 使わないところに、暗い板を置く
+    let gaps = '';
+    let cursor = 0;
+    for (const s of sorted) {
+      if (s.startUs > cursor) {
+        gaps += `<div class="tl-dim" style="left:${this.pct(cursor)}%;width:${this.pct(s.startUs - cursor)}%"></div>`;
+      }
+      cursor = Math.max(cursor, s.endUs);
+    }
+    if (cursor < this.durationUs) {
+      gaps += `<div class="tl-dim" style="left:${this.pct(cursor)}%;width:${this.pct(this.durationUs - cursor)}%"></div>`;
+    }
+    this.el.gaps.innerHTML = gaps;
+
+    let handles = '';
+    for (const s of sorted) {
+      const on = s.id === this.selectedSegment ? ' on' : '';
+      handles += `<div class="tl-handle${on}" data-seg="${s.id}" data-edge="start" data-time="${formatClock(s.startUs)}" style="left:${this.pct(s.startUs)}%"><i></i></div>`;
+      handles += `<div class="tl-handle${on}" data-seg="${s.id}" data-edge="end" data-time="${formatClock(s.endUs)}" style="left:${this.pct(s.endUs)}%"><i></i></div>`;
+    }
+    this.el.handles.innerHTML = handles;
   }
 
   paintTicks() {
@@ -219,7 +251,7 @@ export class Timeline {
     lane.innerHTML = '';
     for (const [index, cue] of this.cues.entries()) {
       const block = document.createElement('div');
-      block.className = 'tl-cue' + (cue.id === this.selectedId ? ' on' : '');
+      block.className = 'tl-cue' + (cue.id === this.selectedCue ? ' on' : '');
       block.dataset.cue = cue.id;
       block.style.left = `${this.pct(cue.startUs)}%`;
       block.style.width = `${Math.max(1.5, this.pct(cue.endUs - cue.startUs))}%`;
@@ -240,10 +272,39 @@ export class Timeline {
 
   /**
    * コマ送りの絵を作る。読み込み直後に一度だけ動かす
+   * 下見とは別の動画要素を使う（同じものを使うと、下見の再生位置を奪ってしまう）
+   * @param {string} src
+   * @param {number} durationUs
+   */
+  async buildThumbnails(src, durationUs) {
+    const video = document.createElement('video');
+    video.src = src;
+    video.muted = true;
+    video.preload = 'auto';
+    try {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('読み込めません')), 8000);
+        video.addEventListener('loadeddata', () => {
+          clearTimeout(timer);
+          resolve(true);
+        }, { once: true });
+        video.addEventListener('error', () => {
+          clearTimeout(timer);
+          reject(new Error('読み込めません'));
+        }, { once: true });
+      });
+      await this.drawThumbnails(video, durationUs);
+    } finally {
+      video.removeAttribute('src');
+      video.load();
+    }
+  }
+
+  /**
    * @param {HTMLVideoElement} video
    * @param {number} durationUs
    */
-  async buildThumbnails(video, durationUs) {
+  async drawThumbnails(video, durationUs) {
     const count = 16;
     const h = 56;
     const ratio = (video.videoWidth || 16) / (video.videoHeight || 9);
@@ -255,20 +316,14 @@ export class Timeline {
     if (!ctx) {
       return;
     }
-    const wasPlaying = !video.paused;
-    video.pause();
     for (let i = 0; i < count; i++) {
-      const t = (durationUs / 1e6) * ((i + 0.5) / count);
+      const at = (durationUs / 1e6) * ((i + 0.5) / count);
       try {
-        await seek(video, t);
+        await seek(video, at);
         ctx.drawImage(video, i * w, 0, w, h);
       } catch (e) {
         break;
       }
-    }
-    await seek(video, 0).catch(() => undefined);
-    if (wasPlaying) {
-      video.play().catch(() => undefined);
     }
   }
 }

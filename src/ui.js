@@ -103,13 +103,41 @@ export function renderCueEditor(root, cue, hooks) {
 
   root.append(
     text,
+    styleSeg(cue, hooks.onChange),
     positionSeg(cue, hooks.onChange),
     labelled(t('cap.size'), numberInput(cue.size, 0.5, 3, (v) => {
       cue.size = v;
       hooks.onChange();
     }, 0.1)),
+    labelled(t('cap.nudge'), numberInput(cue.nudge, -0.4, 0.4, (v) => {
+      cue.nudge = v;
+      hooks.onChange();
+    }, 0.02)),
     remove,
   );
+}
+
+/**
+ * テロップの見せ方を選ぶ
+ * @param {Cue} cue
+ * @param {() => void} onChange
+ */
+function styleSeg(cue, onChange) {
+  const seg = document.createElement('div');
+  seg.className = 'seg mint';
+  for (const style of /** @type {const} */ (['outline', 'bar', 'chip'])) {
+    const button = document.createElement('button');
+    button.dataset.v = style;
+    button.textContent = t(`style.${style}`);
+    button.className = cue.style === style ? 'on' : '';
+    button.onclick = () => {
+      cue.style = style;
+      [...seg.children].forEach((c) => c.classList.toggle('on', c === button));
+      onChange();
+    };
+    seg.append(button);
+  }
+  return seg;
 }
 
 /**
@@ -156,14 +184,14 @@ function labelled(name, input) {
 function numberInput(value, min, max, onChange, step = 0.1) {
   const input = document.createElement('input');
   input.type = 'number';
-  input.value = String(Math.round(value * 10) / 10);
+  input.value = String(Math.round(value * 100) / 100);
   input.min = String(min);
   input.max = String(max);
   input.step = String(step);
   input.style.width = '72px';
   input.onchange = () => {
     const v = Math.min(max, Math.max(min, Number(input.value)));
-    input.value = String(Math.round(v * 10) / 10);
+    input.value = String(Math.round(v * 100) / 100);
     onChange(v);
   };
   return input;
@@ -255,7 +283,8 @@ export class Preview {
       g.foreground.x * k, g.foreground.y * k, g.foreground.w * k, g.foreground.h * k,
     );
 
-    const tUs = Math.round(video.currentTime * 1e6) - plan.trim.inUs;
+    // 下見では、元の時刻のまま見せる（テロップの時刻も元の動画に合わせて置いている）
+    const tUs = Math.round(video.currentTime * 1e6);
     for (const band of this.bands) {
       if (tUs < band.startUs || tUs >= band.endUs) {
         continue;
