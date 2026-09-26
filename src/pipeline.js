@@ -17,13 +17,14 @@ import {
 } from '../vendor/mediabunny/mediabunny.mjs';
 import { Compositor } from './compositor.js';
 import { VideoEncodeStream } from './encoder.js';
+import { fadeAt } from './plan.js';
 
 /** @typedef {import('./types.js').Plan} Plan */
 
 /**
  * @typedef {Object} RunHooks
  * @property {(info: { codecString: string, width: number, height: number, audio: 'copy'|'drop' }) => void} [onOpened]
- * @property {(p: { mediaUs: number, totalUs: number, frames: number, encodedBytes: number, openFrames: number }) => void} [onProgress]
+ * @property {(p: { mediaUs: number, totalUs: number, frames: number, encodedBytes: number, queued: number }) => void} [onProgress]
  * @property {() => boolean} isCancelled
  */
 
@@ -48,109 +49,99 @@ import { VideoEncodeStream } from './encoder.js';
  */
 export async function run(file, plan, captions, hooks) {
   const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
-  const videoTrack = await input.getPrimaryVideoTrack();
-  if (!videoTrack) {
-    throw new Error('映像が入っていません');
-  }
-  const audioTrack = plan.audio.mode === 'copy' ? await input.getPrimaryAudioTrack() : null;
-
-  const output = new Output({
-    format: new Mp4OutputFormat({ fastStart: 'in-memory' }),
-    target: new BufferTarget(),
-  });
-  const videoSource = new EncodedVideoPacketSource('avc');
-  // 回転はここまでに画へ焼き込んである。出力側に回転を書かない（二重に回らないように）
-  output.addVideoTrack(videoSource, { rotation: 0, frameRate: plan.video.maxFps });
-  const audioSource = audioTrack ? new EncodedAudioPacketSource(/** @type {any} */ (audioTrack.codec)) : null;
-  if (audioSource) {
-    output.addAudioTrack(audioSource);
-  }
-  await output.start();
-
-  const compositor = new Compositor({ width: plan.video.width, height: plan.video.height });
-  compositor.configure(plan.video);
-
-  let encodedBytes = 0;
-  /** @type {Error|null} */
-  let encodeError = null;
-  /** @type {Promise<void>[]} */
-  const writes = [];
-  const encoder = new VideoEncodeStream(
-    plan.video,
-    (chunk, meta) => {
-      encodedBytes += chunk.byteLength;
-      writes.push(videoSource.add(EncodedPacket.fromEncodedChunk(chunk), meta));
-    },
-    (err) => { encodeError = err; },
-  );
-  let openFrames = 0;
-  const codecString = await encoder.open();
-  hooks.onOpened?.({
-    codecString,
-    width: plan.video.width,
-    height: plan.video.height,
-    audio: audioSource ? 'copy' : 'drop',
-  });
-
-  const sink = new VideoSampleSink(videoTrack);
-  const speed = plan.trim.speed || 1;
-  const totalUs = Math.max(1, plan.trim.durationUs);
-  let frames = 0;
-  let lastOutUs = -1;
-  let lastKeyUs = -Infinity;
-  let lastDurationUs = 0;
-  let lastReport = 0;
-  let cancelled = false;
-
+  /** @type {Output|null} */
+  let output = null;
+  /** @type {Compositor|null} */
+  let compositor = null;
+  /** @type {VideoEncodeStream|null} */
+  let encoder = null;
+  let finalized = false;
   try {
+    const videoTrack = await input.getPrimaryVideoTrack();
+    if (!videoTrack) {
+      throw new Error('映像が入っていません');
+    }
+    const audioTrack = plan.audio.mode === 'copy' ? await input.getPrimaryAudioTrack() : null;
+
+    output = new Output({
+      format: new Mp4OutputFormat({ fastStart: 'in-memory' }),
+      target: new BufferTarget(),
+    });
+    const videoSource = new EncodedVideoPacketSource('avc');
+    // 回転はここまでに画へ焼き込んである。出力側に回転を書かない（二重に回らないように）
+    output.addVideoTrack(videoSource, { rotation: 0, frameRate: plan.video.maxFps });
+    const audioSource = audioTrack ? new EncodedAudioPacketSource(/** @type {any} */ (audioTrack.codec)) : null;
+    if (audioSource) {
+      output.addAudioTrack(audioSource);
+    }
+    await output.start();
+
+    compositor = new Compositor({ width: plan.video.width, height: plan.video.height });
+    compositor.configure(plan.video);
+
+    let encodedBytes = 0;
+    /** @type {Error|null} */
+    let encodeError = null;
+    /** @type {Promise<void>[]} */
+    const writes = [];
+    encoder = new VideoEncodeStream(
+      plan.video,
+      (chunk, meta) => {
+        encodedBytes += chunk.byteLength;
+        writes.push(videoSource.add(EncodedPacket.fromEncodedChunk(chunk), withBt709(meta)));
+      },
+      (err) => { encodeError = err; },
+    );
+    const codecString = await encoder.open();
+    hooks.onOpened?.({
+      codecString,
+      width: plan.video.width,
+      height: plan.video.height,
+      audio: audioSource ? 'copy' : 'drop',
+    });
+
+    const sink = new VideoSampleSink(videoTrack);
+    const speed = plan.trim.speed || 1;
+    const totalUs = Math.max(1, plan.trim.durationUs);
+    let frames = 0;
+    let lastOutUs = -1;
+    let lastKeyUs = -Infinity;
+    let lastDurationUs = 0;
+    let lastReport = 0;
+
     // 使う区間を順につないでいく。出力の時刻は、前の区間の長さを足したもの
     for (const cut of plan.trim.cuts) {
-      if (cancelled) {
-        break;
-      }
       const pump = audioTrack && audioSource ? new AudioCopyPump(audioTrack, audioSource, cut) : null;
       await pump?.open();
 
-      for await (const sample of sink.samples(cut.decodeFromUs / 1e6, cut.outUs / 1e6)) {
+      // samples() は開始の手前のキーフレームから復号し、開始より後のフレームだけを返す
+      for await (const sample of sink.samples(cut.inUs / 1e6, cut.outUs / 1e6)) {
         if (hooks.isCancelled()) {
           sample.close();
-          cancelled = true;
-          break;
+          return { buffer: null, cancelled: true, frames, durationUs: 0, width: plan.video.width, height: plan.video.height, codecString };
         }
         if (encodeError) {
           sample.close();
           throw encodeError;
         }
         const srcUs = sample.microsecondTimestamp;
-        if (srcUs < cut.inUs) {
-          sample.close();
-          continue;
-        }
-        if (srcUs >= cut.outUs) {
-          sample.close();
-          break;
-        }
         const outUs = cut.outStartUs + Math.round((srcUs - cut.inUs) / speed);
-        if (outUs <= lastOutUs) {
-          sample.close();
-          continue;
-        }
-        if (frames > 0 && outUs - lastOutUs < plan.video.minFrameDeltaUs) {
+        const skip = srcUs < cut.inUs
+          || outUs <= lastOutUs
+          || (frames > 0 && outUs - lastOutUs < plan.video.minFrameDeltaUs);
+        if (skip) {
           sample.close();
           continue;
         }
 
-        const overlays = pickCaptions(captions, outUs);
         const duration = Math.round((sample.microsecondDuration || plan.video.minFrameDeltaUs) / speed);
         const frame = sample.toVideoFrame();
-        openFrames++;
         /** @type {OffscreenCanvas} */
         let canvas;
         try {
-          canvas = compositor.draw(frame, overlays, fadeAt(plan, outUs, totalUs));
+          canvas = compositor.draw(frame, pickCaptions(captions, outUs), fadeAt(plan.video.fadeUs, outUs, totalUs));
         } finally {
           frame.close();
-          openFrames--;
           sample.close();
         }
 
@@ -173,18 +164,10 @@ export async function run(file, plan, captions, hooks) {
         const now = performance.now();
         if (now - lastReport > 100) {
           lastReport = now;
-          hooks.onProgress?.({ mediaUs: outUs, totalUs, frames, encodedBytes, openFrames: encoder.queueSize });
+          hooks.onProgress?.({ mediaUs: outUs, totalUs, frames, encodedBytes, queued: encoder.queueSize });
         }
       }
       await pump?.finish();
-    }
-
-    if (cancelled) {
-      encoder.abort();
-      compositor.dispose();
-      await output.cancel();
-      input.dispose();
-      return { buffer: null, cancelled: true, frames, durationUs: 0, width: plan.video.width, height: plan.video.height, codecString };
     }
 
     await encoder.flush();
@@ -193,11 +176,9 @@ export async function run(file, plan, captions, hooks) {
       throw encodeError;
     }
     await output.finalize();
-    compositor.dispose();
-    encoder.abort();
-    input.dispose();
+    finalized = true;
 
-    hooks.onProgress?.({ mediaUs: totalUs, totalUs, frames, encodedBytes, openFrames: 0 });
+    hooks.onProgress?.({ mediaUs: totalUs, totalUs, frames, encodedBytes, queued: 0 });
     return {
       buffer: /** @type {BufferTarget} */ (output.target).buffer,
       cancelled: false,
@@ -207,34 +188,36 @@ export async function run(file, plan, captions, hooks) {
       height: plan.video.height,
       codecString,
     };
-  } catch (err) {
-    encoder.abort();
-    compositor.dispose();
-    try {
-      await output.cancel();
-    } catch (e) {
+  } finally {
+    // 成功・取り消し・しくじりのどれでも、ここで一度だけ片付ける
+    encoder?.abort();
+    compositor?.dispose();
+    if (output && !finalized) {
       // 片付けの途中の失敗は、元のしくじりを隠さないように黙って進む
+      await output.cancel().catch(() => undefined);
     }
     input.dispose();
-    throw err;
   }
 }
 
 /**
- * 出だしと終わりのふわっと具合（0＝真っ暗、1＝そのまま）
- * @param {Plan} plan
- * @param {number} outUs
- * @param {number} totalUs
- * @returns {number}
+ * 色の指定を BT.709 にそろえる
+ * キャンバスから作ったコマは sRGB と記されるが、中の値は元の動画（BT.709）のまま。
+ * sRGB と書いたままだと、再生する側が明るさの曲線を読み替えて、色が少し変わることがある
+ * @param {EncodedVideoChunkMetadata|undefined} meta
+ * @returns {EncodedVideoChunkMetadata|undefined}
  */
-function fadeAt(plan, outUs, totalUs) {
-  const span = plan.video.fadeUs;
-  if (!span) {
-    return 1;
+function withBt709(meta) {
+  if (!meta?.decoderConfig) {
+    return meta;
   }
-  const inK = Math.min(1, outUs / span);
-  const outK = Math.min(1, Math.max(0, totalUs - outUs) / span);
-  return Math.max(0, Math.min(1, Math.min(inK, outK)));
+  return {
+    ...meta,
+    decoderConfig: {
+      ...meta.decoderConfig,
+      colorSpace: { primaries: 'bt709', transfer: 'bt709', matrix: 'bt709', fullRange: false },
+    },
+  };
 }
 
 /**
@@ -244,13 +227,7 @@ function fadeAt(plan, outUs, totalUs) {
  * @returns {import('./types.js').CaptionBitmap[]}
  */
 function pickCaptions(captions, tUs) {
-  const out = [];
-  for (const c of captions) {
-    if (tUs >= c.startUs && tUs < c.endUs) {
-      out.push(c);
-    }
-  }
-  return out;
+  return captions.filter((c) => tUs >= c.startUs && tUs < c.endUs);
 }
 
 /**

@@ -4,13 +4,14 @@
 
 import { formatClock } from './progress.js';
 import { t } from './i18n.js';
+import { escapeHtml } from './ui.js';
 
 /** @typedef {import('./types.js').Cue} Cue */
 
 // テロップの帯の色（足した順に使う）
 const CUE_COLORS = ['#ff6b5e', '#16b9a6', '#ffb020', '#7c6cf0', '#f45fb0'];
-// これより短いテロップは作らない
-const MIN_CUE_US = 400_000;
+// これより短いテロップ・区間は作らない
+const MIN_SPAN_US = 400_000;
 // つまみで動かすときの刻み
 const SNAP_US = 50_000;
 
@@ -169,9 +170,9 @@ export class Timeline {
           return;
         }
         if (drag.kind === 'seg-start') {
-          segment.startUs = Math.max(0, Math.min(us, segment.endUs - MIN_CUE_US));
+          segment.startUs = Math.max(0, Math.min(us, segment.endUs - MIN_SPAN_US));
         } else {
-          segment.endUs = Math.min(this.durationUs, Math.max(us, segment.startUs + MIN_CUE_US));
+          segment.endUs = Math.min(this.durationUs, Math.max(us, segment.startUs + MIN_SPAN_US));
         }
         this.paint();
         this.hooks.onSegments();
@@ -186,9 +187,9 @@ export class Timeline {
         cue.startUs = Math.max(0, Math.min(this.durationUs - width, us - (drag.grabUs || 0)));
         cue.endUs = cue.startUs + width;
       } else if (drag.kind === 'cue-start') {
-        cue.startUs = Math.max(0, Math.min(us, cue.endUs - MIN_CUE_US));
+        cue.startUs = Math.max(0, Math.min(us, cue.endUs - MIN_SPAN_US));
       } else {
-        cue.endUs = Math.min(this.durationUs, Math.max(us, cue.startUs + MIN_CUE_US));
+        cue.endUs = Math.min(this.durationUs, Math.max(us, cue.startUs + MIN_SPAN_US));
       }
       this.paintLane();
       this.hooks.onCues();
@@ -349,9 +350,4 @@ function seek(video, seconds) {
 /** @param {number} us */
 function snap(us) {
   return Math.round(us / SNAP_US) * SNAP_US;
-}
-
-/** @param {string} s */
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] || c));
 }

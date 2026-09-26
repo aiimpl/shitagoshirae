@@ -84,23 +84,16 @@ function clampBitrate(bps) {
 }
 
 /**
- * 区間ひとつぶんの切り出し位置を、キーフレームと音声パケットの切れ目に合わせる
+ * 区間ひとつぶんの切り出し位置を、音声パケットの切れ目に合わせる
  * 音声の開始は「切り上げ」にする。こうすると出力の時刻が必ず0以上になり、編集リストが要らない
- * @param {{ inUs: number, outUs: number, durationUs: number, keyframeUs: number[],
+ * （映像はキーフレームまで戻って復号する必要があるが、それは mediabunny の samples() が受け持つ）
+ * @param {{ inUs: number, outUs: number, durationUs: number,
  *           audioPacketUs: number, audioFirstUs: number, outStartUs?: number }} a
  * @returns {import('./types.js').PlanCut}
  */
 export function planCut(a) {
   const inUs = Math.max(0, Math.min(a.inUs, a.durationUs));
   const outUs = Math.max(inUs, Math.min(a.outUs, a.durationUs));
-  let decodeFromUs = 0;
-  for (const k of a.keyframeUs) {
-    if (k <= inUs) {
-      decodeFromUs = k;
-    } else {
-      break;
-    }
-  }
   let audioInUs = inUs;
   let audioOutUs = outUs;
   if (a.audioPacketUs > 0) {
@@ -117,7 +110,6 @@ export function planCut(a) {
     inUs,
     outUs,
     outStartUs: a.outStartUs || 0,
-    decodeFromUs,
     audioInUs,
     audioOutUs,
     avOffsetUs: audioInUs - inUs,
@@ -127,7 +119,7 @@ export function planCut(a) {
 /**
  * 使う区間をつないだときの、全体の計画を作る
  * 重なりや前後の入れ違いはここで整える
- * @param {{ segments: import('./types.js').Segment[], durationUs: number, keyframeUs: number[],
+ * @param {{ segments: import('./types.js').Segment[], durationUs: number,
  *           audioPacketUs: number, audioFirstUs: number, speed?: number }} a
  * @returns {import('./types.js').PlanTrim}
  */
@@ -143,7 +135,6 @@ export function planCuts(a) {
       inUs: range.startUs,
       outUs: range.endUs,
       durationUs: a.durationUs,
-      keyframeUs: a.keyframeUs,
       audioPacketUs: a.audioPacketUs,
       audioFirstUs: a.audioFirstUs,
       outStartUs,
@@ -210,6 +201,38 @@ export function toOutputTimes(startUs, endUs, cuts, speed = 1) {
     });
   }
   return out;
+}
+
+/**
+ * テロップの時刻を、元の動画の時刻から出来上がりの時刻に移す
+ * 落とした区間にかかっていたら、残ったところだけに切り分ける。文字が空のものは捨てる
+ * @param {import('./types.js').Cue[]} cues
+ * @param {import('./types.js').PlanCut[]} cuts
+ * @param {number} [speed]
+ * @returns {import('./types.js').Cue[]}
+ */
+export function toOutputCues(cues, cuts, speed = 1) {
+  return cues
+    .filter((cue) => cue.text.trim() !== '')
+    .flatMap((cue) => toOutputTimes(cue.startUs, cue.endUs, cuts, speed)
+      .map((range) => ({ ...cue, id: `${cue.id}@${range.startUs}`, ...range })));
+}
+
+/**
+ * 出だしと終わりのふわっと具合（0＝真っ暗、1＝そのまま）
+ * @param {number} fadeUs  ふわっとさせる長さ。0なら何もしない
+ * @param {number} outUs
+ * @param {number} totalUs
+ * @returns {number}
+ */
+export function fadeAt(fadeUs, outUs, totalUs) {
+  if (!fadeUs) {
+    return 1;
+  }
+  const fromEdge = Math.min(outUs, totalUs - outUs);
+  const k = Math.max(0, Math.min(1, fromEdge / fadeUs));
+  // 始めと終わりをゆるやかにする（一定の速さで暗くなるより自然に見える）
+  return k * k * (3 - 2 * k);
 }
 
 /**
@@ -330,9 +353,6 @@ export function checkXLimits(plan, probe, estimatedBytes) {
   if (probe.video?.hdr) {
     out.push({ level: 'warn', code: 'w.hdr' });
   }
-  if (probe.video?.variableFrameRate) {
-    out.push({ level: 'info', code: 'w.vfr' });
-  }
   if (probe.video && !probe.video.decodable) {
     out.push({ level: 'block', code: 'w.cannotDecode', args: { codec: probe.video.codec } });
   }
@@ -347,15 +367,23 @@ export function checkXLimits(plan, probe, estimatedBytes) {
 
 /**
  * 書き出すフレームレートを決める
- * Xのウェブ投稿は40fpsまでなので、それを超えるときは30fpsに落とす
- * （45fpsのような半端な値のままだと、投稿で弾かれることがある）
+ * Xのウェブ投稿は40fpsまでなので、それを超えるときは落とす。
+ * 落とすときは元を割り切れる値（60→30、50→25、48→24）にする。
+ * 50→30 のように割り切れないと、捨てるコマの間隔が不ぞろいになって動きがカクつく
  * @param {number} sourceFps
  * @param {number} wantFps
  * @returns {number}
  */
 export function outputFps(sourceFps, wantFps) {
   const fps = Math.min(wantFps, X.maxFps, sourceFps);
-  return fps > X.webMaxFps ? 30 : fps;
+  if (fps <= X.webMaxFps) {
+    return fps;
+  }
+  // 元のコマを n 枚に1枚使う。いちばん小さい n で40以下になるものを選ぶ
+  const divisor = Math.ceil(sourceFps / X.webMaxFps);
+  const even = Math.round((sourceFps / divisor) * 1000) / 1000;
+  // 45fps（30fpsの1.5倍速）のように割ると半端になる値は、なめらかさを優先して30に丸める
+  return even >= 24 ? even : 30;
 }
 
 /**
@@ -402,7 +430,6 @@ export function buildPlan(probe, settings) {
     speed: settings.speed || 1,
     segments: settings.segments,
     durationUs: probe.durationUs,
-    keyframeUs: v.keyframeUs,
     audioPacketUs: audio.mode === 'copy' && probe.audio ? probe.audio.packetUs : 0,
     audioFirstUs: probe.audio ? probe.audio.firstPacketUs : 0,
   });

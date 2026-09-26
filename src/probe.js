@@ -71,12 +71,8 @@ async function probeVideo(track) {
     displayHeight,
     rotation: /** @type {Rotation} */ (rotation),
     fps: Math.round(fps * 1000) / 1000,
-    // 平均から外れた値が混ざっていれば可変とみなす。厳密には変換中に分かる
-    variableFrameRate: false,
     bitrateBps: Math.round(stats.averageBitrate || 0),
-    keyframeUs: [],
     hdr: isHdr(color),
-    bitDepth: null,
     decodable,
   };
 }
@@ -117,33 +113,6 @@ async function probeAudio(track) {
 function isHdr(color) {
   const transfer = /** @type {string|undefined} */ (color.transfer);
   return transfer === 'pq' || transfer === 'hlg';
-}
-
-/**
- * このブラウザが受け付ける H.264 の設定を、良いほうから順に探す
- * @param {{ width: number, height: number, bitrate: number, framerate: number, codecs: string[] }} a
- * @returns {Promise<string|null>} 使えるコーデック文字列。どれも使えなければ null
- */
-export async function pickEncodableCodec(a) {
-  for (const codec of a.codecs) {
-    try {
-      const support = await VideoEncoder.isConfigSupported({
-        codec,
-        width: a.width,
-        height: a.height,
-        bitrate: a.bitrate,
-        framerate: a.framerate,
-        avc: { format: 'avc' },
-        latencyMode: 'quality',
-      });
-      if (support.supported) {
-        return codec;
-      }
-    } catch (e) {
-      // 受け付けない設定は例外になることがある。次の候補へ進む
-    }
-  }
-  return null;
 }
 
 /**

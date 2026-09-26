@@ -69,6 +69,17 @@ async function drawBand(band) {
   if (!ctx) {
     throw new Error('テロップを描けません');
   }
+  paintBand(ctx, band, 1);
+  return createImageBitmap(canvas);
+}
+
+/**
+ * 帯の中身を、いまの原点から描く。書き出しと下見で同じ描き方を使う（見た目がずれないように）
+ * @param {CanvasRenderingContext2D|OffscreenCanvasRenderingContext2D} ctx
+ * @param {CaptionBand} band
+ * @param {number} scale  下見のように縮めて描くときの倍率
+ */
+export function paintBand(ctx, band, scale) {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.lineJoin = 'round';
@@ -76,19 +87,29 @@ async function drawBand(band) {
   for (const op of band.ops) {
     if (op.kind === 'rect') {
       ctx.fillStyle = op.fill;
-      ctx.fillRect(op.x, op.y, op.w, op.h);
+      ctx.fillRect(op.x * scale, op.y * scale, op.w * scale, op.h * scale);
       continue;
     }
-    ctx.font = op.font;
+    ctx.font = scale === 1
+      ? op.font
+      : op.font.replace(/(\d+)px/, (_, px) => `${Math.max(6, Math.round(Number(px) * scale))}px`);
     if (op.stroke) {
+      // 影はフチにだけ付ける。文字の面にも付けると、フチの内側が濁る
+      if (op.shadow) {
+        ctx.shadowColor = 'rgba(0,0,0,0.45)';
+        ctx.shadowBlur = op.shadow * scale;
+        ctx.shadowOffsetY = op.shadow * 0.3 * scale;
+      }
       ctx.strokeStyle = op.stroke;
-      ctx.lineWidth = op.strokeWidth;
-      ctx.strokeText(op.text, op.x, op.y);
+      ctx.lineWidth = Math.max(1, op.strokeWidth * scale);
+      ctx.strokeText(op.text, op.x * scale, op.y * scale);
+      ctx.shadowColor = 'transparent';
+      ctx.shadowBlur = 0;
+      ctx.shadowOffsetY = 0;
     }
     ctx.fillStyle = op.fill;
-    ctx.fillText(op.text, op.x, op.y);
+    ctx.fillText(op.text, op.x * scale, op.y * scale);
   }
-  return createImageBitmap(canvas);
 }
 
 /**

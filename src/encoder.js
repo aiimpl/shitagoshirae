@@ -6,6 +6,35 @@
 // これ以上ためない。1枚が数MBあるので、ためるとタブが落ちる
 const MAX_QUEUE = 2;
 
+/**
+ * このブラウザが受け付ける H.264 の設定を、良いほうから順に探す
+ * @param {PlanVideo} video
+ * @returns {Promise<VideoEncoderConfig|null>} どれも使えなければ null
+ */
+export async function pickEncoderConfig(video) {
+  for (const codec of video.codecCandidates) {
+    /** @type {VideoEncoderConfig} */
+    const config = {
+      codec,
+      width: video.width,
+      height: video.height,
+      bitrate: video.bitrateBps,
+      framerate: video.maxFps,
+      avc: { format: 'avc' },
+      latencyMode: 'quality',
+      bitrateMode: 'variable',
+    };
+    try {
+      if ((await VideoEncoder.isConfigSupported(config)).supported) {
+        return config;
+      }
+    } catch (e) {
+      // 受け付けない設定は例外になることがある。次の候補へ進む
+    }
+  }
+  return null;
+}
+
 export class VideoEncodeStream {
   /**
    * @param {PlanVideo} video
@@ -29,37 +58,19 @@ export class VideoEncodeStream {
    * @returns {Promise<string>}
    */
   async open() {
-    const base = {
-      width: this.video.width,
-      height: this.video.height,
-      bitrate: this.video.bitrateBps,
-      framerate: this.video.maxFps,
-      avc: /** @type {const} */ ({ format: 'avc' }),
-      latencyMode: /** @type {const} */ ('quality'),
-      bitrateMode: /** @type {const} */ ('variable'),
-    };
-    for (const codec of this.video.codecCandidates) {
-      const config = { ...base, codec };
-      let supported = false;
-      try {
-        supported = (await VideoEncoder.isConfigSupported(config)).supported === true;
-      } catch (e) {
-        supported = false;
-      }
-      if (!supported) {
-        continue;
-      }
-      const encoder = new VideoEncoder({
-        output: (chunk, meta) => this.onChunk(chunk, meta),
-        error: (err) => this.onError(err instanceof Error ? err : new Error(String(err))),
-      });
-      encoder.configure(config);
-      encoder.ondequeue = () => this.wake();
-      this.encoder = encoder;
-      this.codecString = codec;
-      return codec;
+    const config = await pickEncoderConfig(this.video);
+    if (!config) {
+      throw new Error('このブラウザでは H.264 の書き出しができません');
     }
-    throw new Error('このブラウザでは H.264 の書き出しができません');
+    const encoder = new VideoEncoder({
+      output: (chunk, meta) => this.onChunk(chunk, meta),
+      error: (err) => this.onError(err instanceof Error ? err : new Error(String(err))),
+    });
+    encoder.configure(config);
+    encoder.ondequeue = () => this.wake();
+    this.encoder = encoder;
+    this.codecString = config.codec;
+    return config.codec;
   }
 
   /** 送り出しの詰まりが解けたことを知らせる */

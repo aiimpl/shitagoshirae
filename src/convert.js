@@ -67,40 +67,52 @@ export function startConversion(a) {
   const eta = new EtaEstimator();
   const startedAt = performance.now();
   let settled = false;
-  /** @type {number|undefined} */
+  /** @type {ReturnType<typeof setTimeout>|undefined} */
   let killTimer;
+  /** @type {(value: ConversionResult) => void} */
+  let resolveDone = () => undefined;
+  /** @type {(err: Error) => void} */
+  let rejectDone = () => undefined;
+  /** @type {Promise<ConversionResult>} */
+  const done = new Promise((resolve, reject) => {
+    resolveDone = resolve;
+    rejectDone = reject;
+  });
 
-  const finish = () => {
-    if (killTimer !== undefined) {
-      clearTimeout(killTimer);
+  /**
+   * 結果を一度だけ返し、Worker を捨てる
+   * @param {() => void} report
+   */
+  const settle = (report) => {
+    if (settled) {
+      return;
     }
+    settled = true;
+    clearTimeout(killTimer);
     worker.terminate();
+    report();
   };
 
-  const done = new Promise((resolve, reject) => {
-    worker.onmessage = (event) => {
-      const msg = event.data;
-      if (msg.type === 'opened') {
+  worker.onmessage = (event) => {
+    const msg = event.data;
+    switch (msg.type) {
+      case 'opened':
         a.onOpened?.(msg);
         return;
-      }
-      if (msg.type === 'progress') {
+      case 'progress': {
         const view = eta.update({ mediaUs: msg.mediaUs, totalUs: msg.totalUs, nowMs: performance.now() });
-        const ratio = view.ratio || 0.0001;
         a.onProgress?.({
           ratio: view.ratio,
           etaMs: view.etaMs,
           speed: view.speed,
           frames: msg.frames,
           encodedBytes: msg.encodedBytes,
-          projectedBytes: Math.round(msg.encodedBytes / ratio),
+          projectedBytes: Math.round(msg.encodedBytes / (view.ratio || 0.0001)),
         });
         return;
       }
-      if (msg.type === 'done') {
-        settled = true;
-        finish();
-        resolve({
+      case 'done':
+        settle(() => resolveDone({
           blob: new Blob([msg.buffer], { type: 'video/mp4' }),
           suggestedName: a.name || outputName(a.file.name),
           width: msg.width,
@@ -109,30 +121,18 @@ export function startConversion(a) {
           frames: msg.frames,
           elapsedMs: Math.round(performance.now() - startedAt),
           codecString: msg.codecString,
-        });
+        }));
         return;
-      }
-      if (msg.type === 'cancelled') {
-        settled = true;
-        finish();
-        reject(new CancelledError());
+      case 'cancelled':
+        settle(() => rejectDone(new CancelledError()));
         return;
-      }
-      if (msg.type === 'error') {
-        settled = true;
-        finish();
-        reject(new Error(msg.message));
-      }
-    };
-    worker.onerror = (event) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      finish();
-      reject(new Error(event.message || '変換の途中で止まりました'));
-    };
-  });
+      case 'error':
+        settle(() => rejectDone(new Error(msg.message)));
+    }
+  };
+  worker.onerror = (event) => {
+    settle(() => rejectDone(new Error(event.message || '変換の途中で止まりました')));
+  };
 
   worker.postMessage({
     type: 'start',
@@ -142,17 +142,12 @@ export function startConversion(a) {
   });
 
   const cancel = () => {
-    if (settled) {
+    if (settled || killTimer !== undefined) {
       return;
     }
     worker.postMessage({ type: 'cancel' });
-    // 返事が来なければ、待たずに捨てる
-    killTimer = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        worker.terminate();
-      }
-    }, CANCEL_GRACE_MS);
+    // 返事が来なければ、待たずに捨てる。そのときも取り消しとして返す（画面が変換中のまま残らないように）
+    killTimer = setTimeout(() => settle(() => rejectDone(new CancelledError())), CANCEL_GRACE_MS);
   };
 
   return { done, cancel };

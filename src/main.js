@@ -3,7 +3,7 @@
 
 import { t, lang, setLang, applyStatic } from './i18n.js';
 import { probeFile, checkBrowser } from './probe.js';
-import { buildPlan, estimateOutputBytes, toOutputTimes } from './plan.js';
+import { buildPlan, estimateOutputBytes, toOutputCues } from './plan.js';
 import { buildCaptionTimeline, layoutCaptionSegment, parseSrt } from './captions.js';
 import { rasterizeBands, makeTextMeasurer, closeBitmaps, loadFonts } from './caption-raster.js';
 import { startConversion, CancelledError, outputName, warmUp } from './convert.js';
@@ -15,6 +15,8 @@ import { Timeline } from './timeline.js';
 applyStatic(document);
 
 const FONT_FAMILY = '"Zen Kaku Gothic New","Hiragino Sans",sans-serif';
+// 区間の端にこれより近いところでは切らない（切れ端のような区間ができないように）
+const SPLIT_MARGIN_US = 200_000;
 
 /** @type {import('./types.js').Settings} */
 const settings = {
@@ -63,16 +65,23 @@ const timeline = new Timeline($('timeline'), {
     drawCueEditor();
     refresh();
   },
-  onSelect: (kind, id) => {
-    selectedCueId = kind === 'cue' ? id : null;
-    selectedSegmentId = kind === 'segment' ? id : null;
-    timeline.select(kind, id);
-    drawCueEditor();
-    paintSegmentButtons();
-  },
+  onSelect: (kind, id) => select(kind, id),
   onSeek: (us) => seekPreview(us),
 });
 timeline.setVideo(video);
+
+/**
+ * テロップか区間を選ぶ（選べるのはどちらか1つ）
+ * @param {'cue'|'segment'|null} kind
+ * @param {string|null} id
+ */
+function select(kind, id) {
+  selectedCueId = kind === 'cue' ? id : null;
+  selectedSegmentId = kind === 'segment' ? id : null;
+  timeline.select(kind, id);
+  drawCueEditor();
+  paintSegmentButtons();
+}
 
 /** 下見の再生位置を動かす @param {number} us */
 function seekPreview(us) {
@@ -122,26 +131,24 @@ drop.addEventListener('click', () => {
 });
 
 // ---- 設定の切り替え ----
-segment($('segShape'), settings.shape, (v) => {
-  settings.shape = /** @type {any} */ (v);
-  refresh();
-});
-segment($('segPad'), settings.pad, (v) => {
-  settings.pad = /** @type {any} */ (v);
-  refresh();
-});
-segment($('segRes'), settings.resolution, (v) => {
-  settings.resolution = /** @type {any} */ (v);
-  refresh();
-});
+/** @type {[string, keyof import('./types.js').Settings][]} */
+const CHOICES = [
+  ['segShape', 'shape'],
+  ['segPad', 'pad'],
+  ['segRes', 'resolution'],
+  ['segQuality', 'quality'],
+  ['segAudio', 'audio'],
+];
+for (const [id, key] of CHOICES) {
+  segment($(id), String(settings[key]), (v) => {
+    /** @type {any} */ (settings)[key] = v;
+    refresh();
+  });
+}
 segment($('segSizeMode'), settings.sizeMode, (v) => {
   settings.sizeMode = /** @type {any} */ (v);
   $('rowQuality').hidden = v === 'size';
   $('rowTarget').hidden = v !== 'size';
-  refresh();
-});
-segment($('segQuality'), settings.quality, (v) => {
-  settings.quality = /** @type {any} */ (v);
   refresh();
 });
 segment($('segFade'), settings.fade ? 'on' : 'off', (v) => {
@@ -150,10 +157,6 @@ segment($('segFade'), settings.fade ? 'on' : 'off', (v) => {
 });
 segment($('segSpeed'), String(settings.speed), (v) => {
   settings.speed = Number(v);
-  refresh();
-});
-segment($('segAudio'), settings.audio, (v) => {
-  settings.audio = /** @type {any} */ (v);
   refresh();
 });
 /** @type {HTMLInputElement} */ ($('targetMb')).onchange = (e) => {
@@ -168,8 +171,7 @@ $('bAddCue').onclick = () => {
     return;
   }
   // いま見ているところに置く
-  const head = Math.round(video.currentTime * 1e6);
-  const startUs = Math.max(0, Math.min(head, probe.durationUs - 2_000_000));
+  const startUs = Math.max(0, Math.min(headUs(), probe.durationUs - 2_000_000));
   const cue = {
     id: `c${Date.now()}`,
     text: '',
@@ -180,14 +182,19 @@ $('bAddCue').onclick = () => {
     style: /** @type {const} */ ('outline'),
     nudge: 0,
   };
-  settings.cues.push(cue);
-  selectedCueId = cue.id;
-  selectedSegmentId = null;
-  timeline.setCues(settings.cues);
-  timeline.select('cue', cue.id);
-  drawCueEditor();
-  refresh();
+  addCues([cue]);
 };
+
+/**
+ * テロップを足して、最初のものを選ぶ
+ * @param {import('./types.js').Cue[]} cues
+ */
+function addCues(cues) {
+  settings.cues.push(...cues);
+  timeline.setCues(settings.cues);
+  select('cue', cues[0].id);
+  refresh();
+}
 
 // 字幕ファイル（SRT）から、テロップをまとめて読み込む
 $('bLoadSrt').onclick = () => {
@@ -221,54 +228,58 @@ $('srtFile').onchange = async (e) => {
     note.textContent = t('tl.srtNone');
     return;
   }
-  settings.cues.push(...usable);
-  selectedCueId = usable[0].id;
-  selectedSegmentId = null;
-  timeline.setCues(settings.cues);
-  timeline.select('cue', selectedCueId);
-  drawCueEditor();
-  refresh();
+  addCues(usable);
   note.textContent = t('tl.srtLoaded', { n: usable.length })
     + (errors.length ? t('tl.srtSkipped', { n: errors.length }) : '');
 };
 
+/** いま見ている時刻（マイクロ秒） */
+function headUs() {
+  return Math.round(video.currentTime * 1e6);
+}
+
+/** いま見ているところで割れる区間。端に近すぎれば割らない */
+function splittableSegment() {
+  const head = headUs();
+  return settings.segments.find((s) => head > s.startUs + SPLIT_MARGIN_US && head < s.endUs - SPLIT_MARGIN_US);
+}
+
 // いま見ているところで、区間を2つに割る
 $('bSplit').onclick = () => {
-  const head = Math.round(video.currentTime * 1e6);
-  const target = settings.segments.find((s) => head > s.startUs + 200_000 && head < s.endUs - 200_000);
+  const target = splittableSegment();
   if (!target) {
     return;
   }
+  const head = headUs();
   const tail = { id: `s${Date.now()}`, startUs: head, endUs: target.endUs };
   target.endUs = head;
   settings.segments.push(tail);
   settings.segments.sort((a, b) => a.startUs - b.startUs);
-  selectedSegmentId = tail.id;
   timeline.setSegments(settings.segments);
-  timeline.select('segment', tail.id);
-  paintSegmentButtons();
+  select('segment', tail.id);
   refresh();
 };
 
+/** 選んでいる区間を落とせるか。最後の1つは落とさない */
+function canDropSegment() {
+  return !!selectedSegmentId && settings.segments.length >= 2;
+}
+
 // 選んでいる区間を落とす
 $('bDropSeg').onclick = () => {
-  if (!selectedSegmentId || settings.segments.length < 2) {
+  if (!canDropSegment()) {
     return;
   }
   settings.segments = settings.segments.filter((s) => s.id !== selectedSegmentId);
-  selectedSegmentId = null;
   timeline.setSegments(settings.segments);
-  timeline.select(null, null);
-  paintSegmentButtons();
+  select(null, null);
   refresh();
 };
 
 /** 区間まわりのボタンの効き具合を整える */
 function paintSegmentButtons() {
-  const head = Math.round(video.currentTime * 1e6);
-  const canSplit = settings.segments.some((s) => head > s.startUs + 200_000 && head < s.endUs - 200_000);
-  /** @type {HTMLButtonElement} */ ($('bSplit')).disabled = !canSplit;
-  /** @type {HTMLButtonElement} */ ($('bDropSeg')).disabled = !selectedSegmentId || settings.segments.length < 2;
+  /** @type {HTMLButtonElement} */ ($('bSplit')).disabled = !splittableSegment();
+  /** @type {HTMLButtonElement} */ ($('bDropSeg')).disabled = !canDropSegment();
 }
 
 for (const axis of /** @type {const} */ (['cropX', 'cropY'])) {
@@ -347,13 +358,10 @@ async function load(file) {
     video.currentTime = 0;
     await video.play().catch(() => undefined);
     renderMeta($('inmeta'), describeProbe(probe));
-    selectedCueId = null;
-    selectedSegmentId = null;
     settings.segments = [{ id: 's0', startUs: 0, endUs: probe.durationUs }];
     timeline.setRange(probe.durationUs, settings.segments);
     timeline.setCues(settings.cues);
-    paintSegmentButtons();
-    drawCueEditor();
+    select(null, null);
     refresh();
     show('work');
     // コマ送りの絵は、画面を出してから作る（少し時間がかかるため）
@@ -373,9 +381,8 @@ function drawCueEditor() {
     },
     onRemove: () => {
       settings.cues = settings.cues.filter((c) => c.id !== selectedCueId);
-      selectedCueId = null;
       timeline.setCues(settings.cues);
-      drawCueEditor();
+      select(null, null);
       refresh();
     },
   });
@@ -390,14 +397,7 @@ function refresh() {
   const plan = buildPlan(probe, settings);
   state.plan = plan;
 
-  // ぼかしと単色は、余白ができないときには効かないので、そのことが分かるようにする
-  const bands = settings.cues.length
-    ? buildCaptionTimeline(settings.cues).flatMap((seg) => layoutCaptionSegment(seg, {
-      width: plan.video.width,
-      height: plan.video.height,
-      fontFamily: FONT_FAMILY,
-    }, measureText))
-    : [];
+  const bands = layoutBands(settings.cues, plan);
   preview.setPlan(plan, bands);
   if (bands.length) {
     // 打っている間にフォントを読んでおく（変換のときに読むと、回線がない場で別の字になる）
@@ -429,25 +429,14 @@ function refresh() {
 }
 
 /**
- * テロップの時刻を、元の動画の時刻から出来上がりの時刻に移す
- * 落とした区間にかかっていたら、残ったところだけに切り分ける
+ * テロップを、出力の大きさに合わせて帯に組む
  * @param {import('./types.js').Cue[]} cues
- * @param {import('./types.js').PlanCut[]} cuts
- * @param {number} speed
- * @returns {import('./types.js').Cue[]}
+ * @param {import('./types.js').Plan} plan
+ * @returns {import('./captions.js').CaptionBand[]}
  */
-function toOutputCues(cues, cuts, speed) {
-  /** @type {import('./types.js').Cue[]} */
-  const out = [];
-  for (const cue of cues) {
-    if (!cue.text.trim()) {
-      continue;
-    }
-    for (const range of toOutputTimes(cue.startUs, cue.endUs, cuts, speed)) {
-      out.push({ ...cue, id: `${cue.id}@${range.startUs}`, startUs: range.startUs, endUs: range.endUs });
-    }
-  }
-  return out;
+function layoutBands(cues, plan) {
+  const out = { width: plan.video.width, height: plan.video.height, fontFamily: FONT_FAMILY };
+  return buildCaptionTimeline(cues).flatMap((seg) => layoutCaptionSegment(seg, out, measureText));
 }
 
 async function convert() {
@@ -463,13 +452,8 @@ async function convert() {
   /** @type {import('./types.js').CaptionBitmap[]} */
   let captions = [];
   try {
-    const outCues = toOutputCues(settings.cues, plan.trim.cuts, plan.trim.speed);
-    if (outCues.length) {
-      const bands = buildCaptionTimeline(outCues).flatMap((seg) => layoutCaptionSegment(seg, {
-        width: plan.video.width,
-        height: plan.video.height,
-        fontFamily: FONT_FAMILY,
-      }, measureText));
+    const bands = layoutBands(toOutputCues(settings.cues, plan.trim.cuts, plan.trim.speed), plan);
+    if (bands.length) {
       captions = (await rasterizeBands(bands)).bitmaps;
     }
     const run = startConversion({

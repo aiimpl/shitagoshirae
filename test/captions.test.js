@@ -6,9 +6,9 @@ import {
   buildCaptionTimeline,
   layoutCaptionSegment,
   wrapText,
+  wrapBalanced,
   parseSrt,
   parseSrtTime,
-  pickBand,
 } from '../src/captions.js';
 
 /** 文字幅を「1文字10px」として測るふりをする（ブラウザなしで確かめるため） */
@@ -116,24 +116,6 @@ test('SRT の壊れた固まりは、飛ばして知らせる', () => {
   assert.equal(errors.length, 1);
 });
 
-test('帯を探すとき、前に戻らずに進める', () => {
-  const bands = [];
-  for (let i = 0; i < 1000; i++) {
-    bands.push({ startUs: i * 2_000_000, endUs: i * 2_000_000 + 1_000_000 });
-  }
-  let cursor = 0;
-  let found = 0;
-  for (let t = 0; t < 2_000_000_000; t += 200_000) {
-    const r = pickBand(bands, t, cursor);
-    cursor = r.cursor;
-    if (r.index >= 0) {
-      found++;
-    }
-  }
-  assert.ok(found > 4000);
-  assert.equal(pickBand(bands, 1_500_000, 0).index, -1);
-});
-
 test('黒帯や色帯を選ぶと、帯の絵が先に描かれる', () => {
   const segments = buildCaptionTimeline([cue({ text: '帯つき', style: 'bar' })]);
   const [band] = layoutCaptionSegment(segments[0], { width: 1280, height: 720, fontFamily: 'sans-serif' }, measure);
@@ -146,4 +128,23 @@ test('上下の微調整が位置に効く', () => {
   const base = layoutCaptionSegment(buildCaptionTimeline([cue({})])[0], { width: 1280, height: 720, fontFamily: 'sans-serif' }, measure)[0];
   const moved = layoutCaptionSegment(buildCaptionTimeline([cue({ nudge: -0.1 })])[0], { width: 1280, height: 720, fontFamily: 'sans-serif' }, measure)[0];
   assert.ok(moved.rect.y < base.rect.y);
+});
+
+test('カタカナの言葉の途中では折らない', () => {
+  // 1文字12px。9文字（108px）で折れる幅にすると、ふつうは「パラ」のあとで切れてしまう
+  const lines = wrapText('ブロックの島にパラシュートで降りる', 110, '700 20px sans-serif', measure);
+  assert.deepEqual(lines, ['ブロックの島に', 'パラシュートで降り', 'る']);
+  assert.ok(lines.every((l) => !l.endsWith('パラ')));
+  // 1行にまるごと収まらないほど長いカタカナは、しかたなく途中で折る
+  const long = wrapText('パラシュートパラシュート', 60, '700 20px sans-serif', measure);
+  assert.equal(long.join(''), 'パラシュートパラシュート');
+});
+
+test('折り返すときは、行の長さをそろえる', () => {
+  const lines = wrapBalanced('ブロックの島にパラシュートで降りる', 110, '700 20px sans-serif', measure);
+  assert.deepEqual(lines, ['ブロックの島に', 'パラシュートで', '降りる']);
+  // 1行に収まるものは、そのまま
+  assert.deepEqual(wrapBalanced('短い', 110, '700 20px sans-serif', measure), ['短い']);
+  // 改行はそのまま守る
+  assert.deepEqual(wrapBalanced('上\n下', 110, '700 20px sans-serif', measure), ['上', '下']);
 });

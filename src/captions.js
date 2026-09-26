@@ -7,7 +7,7 @@
 
 /**
  * @typedef {{ kind: 'text', text: string, x: number, y: number, font: string,
- *             fill: string, stroke: string|null, strokeWidth: number }
+ *             fill: string, stroke: string|null, strokeWidth: number, shadow: number }
  *          |{ kind: 'rect', x: number, y: number, w: number, h: number, fill: string }} DrawOp
  */
 
@@ -114,7 +114,7 @@ function layoutOne(cues, position, segment, out, measureText) {
   for (const cue of cues) {
     const size = Math.max(14, Math.round(out.height * 0.05 * (cue.size || 1)));
     const font = `800 ${size}px ${out.fontFamily}`;
-    for (const text of wrapText(cue.text, maxWidth, font, measureText)) {
+    for (const text of wrapBalanced(cue.text, maxWidth, font, measureText)) {
       lines.push({ text, font, size, cue });
     }
   }
@@ -161,6 +161,8 @@ function layoutOne(cues, position, segment, out, measureText) {
       fill: style === 'outline' ? (line.cue.color || '#ffffff') : '#ffffff',
       stroke: style === 'outline' ? (line.cue.outlineColor || '#000000') : null,
       strokeWidth: Math.max(2, Math.round(line.size * 0.16)),
+      // フチ文字にだけ、うっすら影を落とす（明るい画の上でも文字が浮いて読める）。帯のある見せ方は帯が受け持つ
+      shadow: style === 'outline' ? Math.max(2, Math.round(line.size * 0.14)) : 0,
     });
     cursorY += lineHeight;
   }
@@ -181,6 +183,38 @@ function layoutOne(cues, position, segment, out, measureText) {
  */
 function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
+}
+
+/**
+ * 行の長さをそろえて折り返す。行の数は wrapText と同じまま、いちばん狭く収まる幅を探す
+ * （最後の行に1〜2文字だけ残るような、ばらつきのある折り方を避ける）
+ * @param {string} text
+ * @param {number} maxWidth
+ * @param {string} font
+ * @param {(text: string, font: string) => number} measureText
+ * @returns {string[]}
+ */
+export function wrapBalanced(text, maxWidth, font, measureText) {
+  return text.split('\n').flatMap((para) => {
+    const greedy = wrapText(para, maxWidth, font, measureText);
+    if (greedy.length < 2) {
+      return greedy;
+    }
+    let lo = maxWidth / greedy.length;
+    let hi = maxWidth;
+    let best = greedy;
+    for (let i = 0; i < 14 && hi - lo > 0.5; i++) {
+      const mid = (lo + hi) / 2;
+      const tried = wrapText(para, mid, font, measureText);
+      if (tried.length <= greedy.length) {
+        best = tried;
+        hi = mid;
+      } else {
+        lo = mid;
+      }
+    }
+    return best;
+  });
 }
 
 /**
@@ -213,6 +247,13 @@ export function wrapText(text, maxWidth, font, measureText) {
       line = line.slice(lastSpace + 1) + ch;
       continue;
     }
+    // カタカナの言葉（パラシュート など）の途中でも折らない。行の頭にその言葉ごと送る
+    const run = katakanaRunStart(line);
+    if (run > 0 && isKatakana(ch)) {
+      lines.push(line.slice(0, run));
+      line = line.slice(run) + ch;
+      continue;
+    }
     if (NO_LINE_START.includes(ch) && line.length > 1) {
       // 行の頭に置けない文字は、ひとつ前の文字ごと次の行へ送る
       lines.push(line.slice(0, -1));
@@ -226,6 +267,29 @@ export function wrapText(text, maxWidth, font, measureText) {
     lines.push(line);
   }
   return lines;
+}
+
+/** @param {string} ch */
+function isKatakana(ch) {
+  return /[\u30a0-\u30ffー]/.test(ch);
+}
+
+/**
+ * 行の終わりに続いているカタカナの、始まりの位置。終わりがカタカナでなければ -1
+ * @param {string} line
+ * @returns {number}
+ */
+function katakanaRunStart(line) {
+  const chars = [...line];
+  let i = chars.length;
+  while (i > 0 && isKatakana(chars[i - 1])) {
+    i--;
+  }
+  if (i === chars.length) {
+    return -1;
+  }
+  // 文字の数え方を、UTF-16 の位置に直す
+  return chars.slice(0, i).join('').length;
 }
 
 /**
@@ -285,22 +349,4 @@ export function parseSrtTime(s) {
   }
   const ms = Number(m[4].padEnd(3, '0'));
   return ((Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3])) * 1000 + ms) * 1000;
-}
-
-/**
- * いまの時刻に出す帯を探す。前へ戻らない探し方なので、1本ぶん通しても速い
- * @param {{ startUs: number, endUs: number }[]} bands
- * @param {number} tUs
- * @param {number} cursor
- * @returns {{ index: number, cursor: number }}
- */
-export function pickBand(bands, tUs, cursor) {
-  let i = Math.max(0, cursor);
-  while (i < bands.length && bands[i].endUs <= tUs) {
-    i++;
-  }
-  if (i < bands.length && bands[i].startUs <= tUs && tUs < bands[i].endUs) {
-    return { index: i, cursor: i };
-  }
-  return { index: -1, cursor: i };
 }

@@ -16,7 +16,8 @@ pre { background: #f4f4f4; padding: 12px; border-radius: 8px; overflow: auto; }
 <div id="drop">ここに動画ファイルを落とす</div>
 <pre id="out">（まだ何も読んでいません）</pre>
 <script type="module">
-import { probeFile, checkBrowser, pickEncodableCodec } from '../src/probe.js';
+import { probeFile, checkBrowser } from '../src/probe.js';
+import { pickEncoderConfig } from '../src/encoder.js';
 import { buildPlan } from '../src/plan.js';
 
 const drop = document.getElementById('drop');
@@ -56,15 +57,7 @@ async function run(file) {
       quality: 'high', maxFps: 60, audio: 'copy', cues: [],
     };
     const plan = buildPlan(probe, settings);
-    const codec = plan.video.codecCandidates.length
-      ? await pickEncodableCodec({
-        width: plan.video.width,
-        height: plan.video.height,
-        bitrate: plan.video.bitrateBps,
-        framerate: plan.video.maxFps,
-        codecs: plan.video.codecCandidates,
-      })
-      : null;
+    const codec = (await pickEncoderConfig(plan.video))?.codec ?? null;
     out.textContent = [
       `かかった時間: ${Math.round(performance.now() - t0)}ms`,
       `このブラウザで使えるコーデック: ${codec}`,

@@ -10,6 +10,8 @@ import {
   planCuts,
   normalizeSegments,
   toOutputTimes,
+  toOutputCues,
+  fadeAt,
   decideAudioCopy,
   h264Level,
   codecCandidates,
@@ -36,11 +38,8 @@ function sampleProbe(over = {}) {
       displayHeight: 1080,
       rotation: 0,
       fps: 30,
-      variableFrameRate: false,
       bitrateBps: 13_562_798,
-      keyframeUs: [0, 2_000_000, 4_000_000, 6_000_000],
       hdr: false,
-      bitDepth: 8,
       decodable: true,
     },
     audio: null,
@@ -98,16 +97,14 @@ test('見積もったサイズは、狙ったサイズに近い', () => {
   assert.ok(Math.abs(bytes - target) / target < 0.05, `${bytes} vs ${target}`);
 });
 
-test('切り出しは、復号をひとつ前のキーフレームから始める', () => {
+test('切り出しは、指定した区間をそのまま使い、音声は切れ目に合わせる', () => {
   const t = planCut({
     inUs: 5_030_000,
     outUs: 9_000_000,
     durationUs: 40_000_000,
-    keyframeUs: [0, 2_000_000, 4_000_000, 6_000_000, 8_000_000],
     audioPacketUs: 21_333,
     audioFirstUs: 0,
   });
-  assert.equal(t.decodeFromUs, 4_000_000);
   assert.equal(t.inUs, 5_030_000);
   assert.equal(t.outUs - t.inUs, 3_970_000);
   // 音声は切れ目に切り上げるので、必ず映像の開始以降になる
@@ -116,13 +113,13 @@ test('切り出しは、復号をひとつ前のキーフレームから始め�
 });
 
 test('音声がないときは、ずれもない', () => {
-  const t = planCut({ inUs: 1_000_000, outUs: 2_000_000, durationUs: 5_000_000, keyframeUs: [0], audioPacketUs: 0, audioFirstUs: 0 });
+  const t = planCut({ inUs: 1_000_000, outUs: 2_000_000, durationUs: 5_000_000, audioPacketUs: 0, audioFirstUs: 0 });
   assert.equal(t.audioInUs, t.inUs);
   assert.equal(t.avOffsetUs, 0);
 });
 
 test('終わりが長さを超えていたら、長さに収める', () => {
-  const t = planCut({ inUs: 0, outUs: 99_000_000, durationUs: 40_000_000, keyframeUs: [0], audioPacketUs: 0, audioFirstUs: 0 });
+  const t = planCut({ inUs: 0, outUs: 99_000_000, durationUs: 40_000_000, audioPacketUs: 0, audioFirstUs: 0 });
   assert.equal(t.outUs, 40_000_000);
   assert.equal(t.outUs - t.inUs, 40_000_000);
 });
@@ -245,7 +242,6 @@ test('いらないところを落とすと、出来上がりの長さが縮む',
       { id: 'b', startUs: 30_000_000, endUs: 40_000_000 },
     ],
     durationUs: 40_000_000,
-    keyframeUs: [0, 10_000_000, 20_000_000, 30_000_000],
     audioPacketUs: 0,
     audioFirstUs: 0,
   });
@@ -253,7 +249,7 @@ test('いらないところを落とすと、出来上がりの長さが縮む',
   assert.equal(trim.durationUs, 20_000_000);
   assert.equal(trim.cuts[0].outStartUs, 0);
   assert.equal(trim.cuts[1].outStartUs, 10_000_000);
-  assert.equal(trim.cuts[1].decodeFromUs, 30_000_000);
+  assert.equal(trim.cuts[1].inUs, 30_000_000);
 });
 
 test('テロップの時刻は、落とした区間をまたぐと切り分けられる', () => {
@@ -263,7 +259,6 @@ test('テロップの時刻は、落とした区間をまたぐと切り分け�
       { id: 'b', startUs: 30_000_000, endUs: 40_000_000 },
     ],
     durationUs: 40_000_000,
-    keyframeUs: [0],
     audioPacketUs: 0,
     audioFirstUs: 0,
   });
@@ -315,7 +310,6 @@ test('速さを当てると、テロップの時刻もそのぶん早くなる',
   const trim = planCuts({
     segments: [{ id: 'a', startUs: 0, endUs: 20_000_000 }],
     durationUs: 20_000_000,
-    keyframeUs: [0],
     audioPacketUs: 0,
     audioFirstUs: 0,
     speed: 2,
@@ -340,5 +334,51 @@ test('40fpsを超えるときは30fpsに落とす（Xのウェブ投稿の上限
   assert.equal(outputFps(45, 60), 30);   // 30fpsを1.5倍速にした場合
   assert.equal(outputFps(60, 60), 30);
   assert.equal(outputFps(24, 60), 24);
+  // 割り切れる値に落とす（50→30 だとコマの間隔が不ぞろいになる）
+  assert.equal(outputFps(50, 60), 25);
+  assert.equal(outputFps(48, 60), 24);
+  assert.equal(outputFps(120, 60), 40);
   assert.equal(outputFps(30, 24), 24);
+});
+
+test('テロップを出来上がりの時刻に移すとき、落とした区間にかかる部分は切り分け、空の文字は捨てる', () => {
+  const trim = planCuts({
+    segments: [
+      { id: 'a', startUs: 0, endUs: 10_000_000 },
+      { id: 'b', startUs: 30_000_000, endUs: 40_000_000 },
+    ],
+    durationUs: 40_000_000,
+    audioPacketUs: 0,
+    audioFirstUs: 0,
+  });
+  /** @type {import('../src/types.js').Cue} */
+  const base = { id: 'c1', text: 'またぐ', startUs: 8_000_000, endUs: 32_000_000, position: 'bottom', size: 1, style: 'outline', nudge: 0 };
+  const out = toOutputCues([base, { ...base, id: 'c2', text: '  ' }], trim.cuts, trim.speed);
+  assert.deepEqual(out.map((c) => [c.startUs, c.endUs]), [[8_000_000, 10_000_000], [10_000_000, 12_000_000]]);
+  assert.equal(new Set(out.map((c) => c.id)).size, 2);
+  assert.ok(out.every((c) => c.text === 'またぐ'));
+});
+
+test('2倍速では、テロップの時刻も半分になる', () => {
+  const trim = planCuts({
+    segments: [{ id: 'a', startUs: 0, endUs: 10_000_000 }],
+    durationUs: 10_000_000,
+    audioPacketUs: 0,
+    audioFirstUs: 0,
+    speed: 2,
+  });
+  /** @type {import('../src/types.js').Cue} */
+  const cue = { id: 'c', text: 'x', startUs: 4_000_000, endUs: 6_000_000, position: 'bottom', size: 1, style: 'outline', nudge: 0 };
+  assert.deepEqual(toOutputCues([cue], trim.cuts, trim.speed).map((c) => [c.startUs, c.endUs]), [[2_000_000, 3_000_000]]);
+});
+
+test('ふわっと：端で真っ暗、真ん中はそのまま、切ってあれば常にそのまま', () => {
+  assert.equal(fadeAt(400_000, 0, 10_000_000), 0);
+  assert.equal(fadeAt(400_000, 200_000, 10_000_000), 0.5);
+  assert.equal(fadeAt(400_000, 5_000_000, 10_000_000), 1);
+  assert.equal(fadeAt(400_000, 9_800_000, 10_000_000), 0.5);
+  assert.equal(fadeAt(400_000, 10_000_000, 10_000_000), 0);
+  assert.equal(fadeAt(0, 0, 10_000_000), 1);
+  // 始めはゆるやかに明るくなる（一定の速さなら 0.25）
+  assert.equal(fadeAt(400_000, 100_000, 10_000_000), 0.15625);
 });

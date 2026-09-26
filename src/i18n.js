@@ -150,7 +150,6 @@ const S = {
     'HDRの動画です。SDRに変換すると色が変わることがあります（ブラウザまかせの部分です）。',
     'This is an HDR video. Converting to SDR can shift the colors — that part is up to the browser.',
   ],
-  'w.vfr': ['フレームの間隔がそろっていない動画です。時刻はそのまま保ちます。', 'This video has a variable frame rate. Timestamps are carried through as they are.'],
   'w.cannotDecode': ['この形式（{codec}）は、このブラウザでは読めません。', 'This browser cannot decode {codec}.'],
   'w.avOffset': ['音の頭が{ms}ミリ秒ずれます（音の区切りに合わせているため）。', 'Audio starts {ms}ms later, because it is cut on a packet boundary.'],
   'w.noVideo': ['映像が入っていません。', 'There is no video track in this file.'],

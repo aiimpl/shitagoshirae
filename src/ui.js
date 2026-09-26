@@ -1,8 +1,10 @@
 // 画面の部品：切り替えボタン・仕上がりの下見・テロップの編集・注意書き
 // @ts-check
 
-import { t, lang } from './i18n.js';
+import { t } from './i18n.js';
 import { formatBytes, formatClock } from './progress.js';
+import { paintBand } from './caption-raster.js';
+import { BACKDROP_TONE } from './compositor.js';
 
 /** @typedef {import('./types.js').Plan} Plan */
 /** @typedef {import('./types.js').Cue} Cue */
@@ -103,9 +105,9 @@ export function renderCueEditor(root, cue, hooks) {
 
   root.append(
     text,
-    styleSeg(cue, hooks.onChange),
+    cueChoice(cue, 'style', /** @type {const} */ (['outline', 'bar', 'chip']), 'seg mint', hooks.onChange),
     colorPicker(cue, hooks.onChange),
-    positionSeg(cue, hooks.onChange),
+    cueChoice(cue, 'position', /** @type {const} */ (['top', 'middle', 'bottom']), 'seg', hooks.onChange),
     labelled(t('cap.size'), numberInput(cue.size, 0.5, 3, (v) => {
       cue.size = v;
       hooks.onChange();
@@ -146,43 +148,25 @@ function colorPicker(cue, onChange) {
 }
 
 /**
- * テロップの見せ方を選ぶ
+ * テロップの持ち物のひとつを、ボタンの並びで選ぶ（見せ方・上中下）
+ * @template {'style'|'position'} K
  * @param {Cue} cue
+ * @param {K} field
+ * @param {readonly Cue[K][]} values
+ * @param {string} className
  * @param {() => void} onChange
  */
-function styleSeg(cue, onChange) {
+function cueChoice(cue, field, values, className, onChange) {
   const seg = document.createElement('div');
-  seg.className = 'seg mint';
-  for (const style of /** @type {const} */ (['outline', 'bar', 'chip'])) {
+  seg.className = className;
+  const prefix = field === 'style' ? 'style' : 'pos';
+  for (const value of values) {
     const button = document.createElement('button');
-    button.dataset.v = style;
-    button.textContent = t(`style.${style}`);
-    button.className = cue.style === style ? 'on' : '';
+    button.dataset.v = value;
+    button.textContent = t(`${prefix}.${value}`);
+    button.className = cue[field] === value ? 'on' : '';
     button.onclick = () => {
-      cue.style = style;
-      [...seg.children].forEach((c) => c.classList.toggle('on', c === button));
-      onChange();
-    };
-    seg.append(button);
-  }
-  return seg;
-}
-
-/**
- * 上・中・下を選ぶ
- * @param {Cue} cue
- * @param {() => void} onChange
- */
-function positionSeg(cue, onChange) {
-  const seg = document.createElement('div');
-  seg.className = 'seg';
-  for (const pos of /** @type {const} */ (['top', 'middle', 'bottom'])) {
-    const button = document.createElement('button');
-    button.dataset.v = pos;
-    button.textContent = t(`pos.${pos}`);
-    button.className = cue.position === pos ? 'on' : '';
-    button.onclick = () => {
-      cue.position = pos;
+      cue[field] = value;
       [...seg.children].forEach((c) => c.classList.toggle('on', c === button));
       onChange();
     };
@@ -300,7 +284,8 @@ export class Preview {
 
     // 動画の要素は回転を当てた見た目で再生されるので、そのまま使える
     if (plan.video.pad === 'blur' && g.needsPad) {
-      ctx.filter = `blur(${Math.max(2, plan.video.blurRadiusPx * k * 0.6)}px)`;
+      // 書き出しと同じく、背景は少し暗く・色を薄くする
+      ctx.filter = `blur(${Math.max(2, plan.video.blurRadiusPx * k * 0.6)}px) brightness(${BACKDROP_TONE.bright}) saturate(${BACKDROP_TONE.sat})`;
       drawRect(ctx, video, g.background, k);
       ctx.filter = 'none';
     }
@@ -319,22 +304,7 @@ export class Preview {
       }
       ctx.save();
       ctx.translate(band.rect.x * k, band.rect.y * k);
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.lineJoin = 'round';
-      for (const op of band.ops) {
-        if (op.kind !== 'text') {
-          continue;
-        }
-        ctx.font = op.font.replace(/(\d+)px/, (_, px) => `${Math.max(6, Math.round(Number(px) * k))}px`);
-        if (op.stroke) {
-          ctx.strokeStyle = op.stroke;
-          ctx.lineWidth = Math.max(1, op.strokeWidth * k);
-          ctx.strokeText(op.text, op.x * k, op.y * k);
-        }
-        ctx.fillStyle = op.fill;
-        ctx.fillText(op.text, op.x * k, op.y * k);
-      }
+      paintBand(ctx, band, k);
       ctx.restore();
     }
   }
@@ -378,13 +348,3 @@ export function describeProbe(probe) {
 export function escapeHtml(s) {
   return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] || c));
 }
-
-/**
- * 秒を「0:05」の形に
- * @param {number} us
- */
-export function clock(us) {
-  return formatClock(us);
-}
-
-export { lang };

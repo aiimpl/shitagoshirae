@@ -54,11 +54,8 @@
  * @property {number} displayHeight
  * @property {Rotation} rotation
  * @property {number} fps              平均。可変のことがある
- * @property {boolean} variableFrameRate
  * @property {number} bitrateBps
- * @property {number[]} keyframeUs     昇順
  * @property {boolean} hdr
- * @property {number|null} bitDepth
  * @property {boolean} decodable       このブラウザで復号できるか
  */
 
@@ -172,7 +169,6 @@
  * @property {number} inUs           元の動画での開始
  * @property {number} outUs          元の動画での終わり
  * @property {number} outStartUs     出力での開始（前の区間の長さを足したもの）
- * @property {number} decodeFromUs   直前のキーフレーム。復号はここから始める
  * @property {number} audioInUs      音声パケットの切れ目に切り上げた開始
  * @property {number} audioOutUs     切れ目に切り下げた終わり
  * @property {number} avOffsetUs     audioInUs - inUs（0以上）
