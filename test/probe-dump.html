@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>下調べの確認（開発用）</title>
+<style>
+body { font-family: "Hiragino Sans", sans-serif; margin: 24px; max-width: 900px; }
+#drop { border: 2px dashed #888; border-radius: 10px; padding: 40px; text-align: center; color: #666; }
+#drop.on { border-color: #2a7; color: #2a7; }
+pre { background: #f4f4f4; padding: 12px; border-radius: 8px; overflow: auto; }
+</style>
+</head>
+<body>
+<h1>下調べの確認（開発用）</h1>
+<p>mediabunny をバンドラなしで読み込めるか、実際のファイルを読めるかを確かめるための画面です。</p>
+<div id="drop">ここに動画ファイルを落とす</div>
+<pre id="out">（まだ何も読んでいません）</pre>
+<script type="module">
+import { probeFile, checkBrowser, pickEncodableCodec } from '../src/probe.js';
+import { buildPlan } from '../src/plan.js';
+
+const drop = document.getElementById('drop');
+const out = document.getElementById('out');
+out.textContent = 'ブラウザの対応：' + JSON.stringify(checkBrowser());
+
+for (const type of ['dragenter', 'dragover']) {
+  drop.addEventListener(type, (e) => { e.preventDefault(); drop.classList.add('on'); });
+}
+for (const type of ['dragleave', 'drop']) {
+  drop.addEventListener(type, () => drop.classList.remove('on'));
+}
+drop.addEventListener('drop', async (e) => {
+  e.preventDefault();
+  const file = e.dataTransfer.files[0];
+  if (file) {
+    await run(file);
+  }
+});
+drop.addEventListener('click', () => {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'video/*';
+  input.onchange = () => input.files[0] && run(input.files[0]);
+  input.click();
+});
+
+async function run(file) {
+  out.textContent = '読んでいます…';
+  const t0 = performance.now();
+  try {
+    const probe = await probeFile(file);
+    const settings = {
+      shape: 'keep', pad: 'blur', padColor: '#101418', blurStrength: 0.5, resolution: '1080p',
+      inUs: 0, outUs: probe.durationUs, sizeMode: 'quality', targetBytes: 30 * 1024 * 1024,
+      quality: 'high', maxFps: 30, audio: 'copy', cues: [],
+    };
+    const plan = buildPlan(probe, settings);
+    const codec = plan.video.codecCandidates.length
+      ? await pickEncodableCodec({
+        width: plan.video.width,
+        height: plan.video.height,
+        bitrate: plan.video.bitrateBps,
+        framerate: plan.video.maxFps,
+        codecs: plan.video.codecCandidates,
+      })
+      : null;
+    out.textContent = [
+      `かかった時間: ${Math.round(performance.now() - t0)}ms`,
+      `このブラウザで使えるコーデック: ${codec}`,
+      '--- probe ---',
+      JSON.stringify(probe, null, 2),
+      '--- plan ---',
+      JSON.stringify(plan, null, 2),
+    ].join('\n');
+    window.__result = { probe, plan, codec };
+  } catch (err) {
+    out.textContent = 'しくじりました: ' + (err && err.stack || err);
+  }
+}
+
+window.__probeFile = run;
+</script>
+</body>
+</html>

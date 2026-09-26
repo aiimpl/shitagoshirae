@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>変換の確認（開発用）</title>
+<style>
+body { font-family: "Hiragino Sans", sans-serif; margin: 24px; max-width: 900px; }
+pre { background: #f4f4f4; padding: 12px; border-radius: 8px; overflow: auto; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>変換の確認（開発用）</h1>
+<p>Chrome から <code>window.__convert(url, settings, saveName)</code> を呼んで使います。</p>
+<pre id="out">待っています</pre>
+<script type="module">
+import { probeFile } from '../src/probe.js';
+import { buildPlan } from '../src/plan.js';
+import { run } from '../src/pipeline.js';
+
+const out = document.getElementById('out');
+const log = (s) => { out.textContent += '\n' + s; };
+
+/** @type {(url: string, over: object, saveName: string) => Promise<object>} */
+window.__convert = async (url, over, saveName) => {
+  window.__done = null;
+  out.textContent = `読み込み: ${url}`;
+  const blob = await (await fetch(url)).blob();
+  const file = new File([blob], url.split('/').pop(), { type: 'video/mp4' });
+  const probe = await probeFile(file);
+  const settings = {
+    shape: 'keep', pad: 'blur', padColor: '#101418', blurStrength: 0.5, resolution: '1080p',
+    inUs: 0, outUs: probe.durationUs, sizeMode: 'quality', targetBytes: 30 * 1024 * 1024,
+    quality: 'high', maxFps: 30, audio: 'copy', cues: [], ...over,
+  };
+  const plan = buildPlan(probe, settings);
+  log(`計画: ${plan.video.width}x${plan.video.height} ${(plan.video.bitrateBps / 1e6).toFixed(2)}Mbps 音声:${plan.audio.mode}`);
+  if (plan.blocked) {
+    throw new Error('止められました: ' + JSON.stringify(plan.warnings));
+  }
+
+  let cancelled = false;
+  window.__cancel = () => { cancelled = true; };
+  const t0 = performance.now();
+  let lastProgress = null;
+  const result = await run(file, plan, [], {
+    isCancelled: () => cancelled,
+    onOpened: (info) => log(`開きました: ${info.codecString} ${info.width}x${info.height} 音声:${info.audio}`),
+    onProgress: (p) => { lastProgress = p; },
+  });
+  const elapsed = performance.now() - t0;
+  log(`終わりました: ${result.frames}枚 / ${(elapsed / 1000).toFixed(1)}秒`);
+
+  let saved = null;
+  if (result.buffer && saveName) {
+    const res = await fetch('/__save/' + saveName, { method: 'POST', body: result.buffer });
+    saved = await res.json();
+    log(`保存: ${saved.saved} (${(saved.bytes / 1024 / 1024).toFixed(1)}MB)`);
+  }
+  const summary = {
+    probe: { ...probe, video: probe.video },
+    plan: { width: plan.video.width, height: plan.video.height, bitrateBps: plan.video.bitrateBps, audio: plan.audio, trim: plan.trim },
+    frames: result.frames,
+    elapsedMs: Math.round(elapsed),
+    durationUs: result.durationUs,
+    cancelled: result.cancelled,
+    saved,
+    lastProgress,
+  };
+  window.__done = summary;
+  return summary;
+};
+</script>
+</body>
+</html>

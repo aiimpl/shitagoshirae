@@ -1,0 +1,10 @@
+{
+  "name": "shitagoshirae",
+  "private": true,
+  "type": "module",
+  "description": "Xに上げる動画を、ブラウザの中だけで整える道具",
+  "scripts": {
+    "test": "node --test",
+    "typecheck": "npx -y typescript@5.7 tsc --noEmit -p jsconfig.json"
+  }
+}
