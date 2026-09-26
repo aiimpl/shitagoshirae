@@ -93,9 +93,10 @@ async function drawBand(band) {
 
 /**
  * 使う文字ぶんのフォントを先に読み込む。待たないと、最初の数枚だけ別のフォントで焼き込まれる
+ * 文字を打っている間に呼んでおくと、変換を押した時点では読み終わっている
  * @param {CaptionBand[]} bands
  */
-async function loadFonts(bands) {
+export async function loadFonts(bands) {
   if (!document.fonts) {
     return;
   }

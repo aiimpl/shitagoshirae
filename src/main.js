@@ -5,8 +5,8 @@ import { t, lang, setLang, applyStatic } from './i18n.js';
 import { probeFile, checkBrowser } from './probe.js';
 import { buildPlan, estimateOutputBytes } from './plan.js';
 import { buildCaptionTimeline, layoutCaptionSegment } from './captions.js';
-import { rasterizeBands, makeTextMeasurer, closeBitmaps } from './caption-raster.js';
-import { startConversion, CancelledError, outputName } from './convert.js';
+import { rasterizeBands, makeTextMeasurer, closeBitmaps, loadFonts } from './caption-raster.js';
+import { startConversion, CancelledError, outputName, warmUp } from './convert.js';
 import { saveBlob } from './save.js';
 import { formatBytes, formatEta, formatClock } from './progress.js';
 import { $, segment, renderMeta, renderWarnings, renderCues, Preview, describeProbe } from './ui.js';
@@ -179,6 +179,8 @@ function show(name) {
   $('error').hidden = name !== 'error';
   if (name === 'work') {
     preview.start();
+    // 設定をいじっている間に、変換の係を読み込んでおく（押してから読むと、回線がない場で始められない）
+    warmUp();
   } else {
     preview.stop();
   }
@@ -260,6 +262,10 @@ function refresh() {
     }, measureText))
     : [];
   preview.setPlan(plan, bands);
+  if (bands.length) {
+    // 打っている間にフォントを読んでおく（変換のときに読むと、回線がない場で別の字になる）
+    loadFonts(bands);
+  }
 
   const estimated = estimateOutputBytes({
     videoBitrateBps: plan.video.bitrateBps,

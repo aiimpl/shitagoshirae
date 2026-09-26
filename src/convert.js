@@ -32,6 +32,30 @@ import { EtaEstimator } from './progress.js';
 // 取り消しを頼んでから、返事を待つ上限。これを過ぎたら Worker ごと捨てる
 const CANCEL_GRACE_MS = 1500;
 
+/** 先に用意しておく係。押してから読み込むと、その瞬間に回線がないと始められない @type {Worker|null} */
+let warm = null;
+
+/**
+ * 変換の係を先に用意しておく。設定をいじっている間に読み込みが終わる
+ */
+export function warmUp() {
+  if (!warm) {
+    warm = makeWorker();
+  }
+}
+
+/** @returns {Worker} */
+function makeWorker() {
+  return new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+}
+
+/** 用意してあればそれを使う @returns {Worker} */
+function takeWorker() {
+  const found = warm;
+  warm = null;
+  return found || makeWorker();
+}
+
 /**
  * @param {{ file: File, plan: Plan, captions?: CaptionBitmap[], name?: string,
  *           onProgress?: (p: ProgressView) => void,
@@ -39,7 +63,7 @@ const CANCEL_GRACE_MS = 1500;
  * @returns {{ done: Promise<ConversionResult>, cancel: () => void }}
  */
 export function startConversion(a) {
-  const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+  const worker = takeWorker();
   const eta = new EtaEstimator();
   const startedAt = performance.now();
   let settled = false;
