@@ -7,7 +7,8 @@ const BASE = process.env.BASE || 'http://127.0.0.1:8777';
 const SAMPLE = process.argv[2] || 'samples/rot90.mp4';
 
 const tab = await openTab(`${BASE}/index.html`);
-await tab.waitFor('document.readyState === "complete"');
+// about:blank の段階で進まないよう、目印の要素が出るまで待つ
+await tab.waitFor('document.readyState === "complete" && !!document.getElementById("drop")');
 
 // 1. 動画を入れる（人と同じ「クリックして選ぶ」経路。このページは通信できない設定なので、
 //    ファイルはブラウザの選択の仕組みから渡す）
