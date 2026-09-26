@@ -48,7 +48,7 @@ console.log(`  下見: ${pv.w}x${pv.h} 明るさ ${pv.avg} ${pv.avg > 8 ? 'ok' :
 await tab.evaluate(`document.querySelector('#segShape button[data-v="9:16"]').click()`);
 await tab.evaluate(`document.getElementById('bAddCue').click()`);
 await tab.evaluate(`(() => {
-  const input = document.querySelector('#cues input[type=text]');
+  const input = document.querySelector('#cueEdit input[type=text]');
   input.value = 'テロップの確認';
   input.dispatchEvent(new Event('input', { bubbles: true }));
 })()`);

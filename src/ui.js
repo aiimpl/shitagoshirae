@@ -72,71 +72,48 @@ export function renderWarnings(el, warnings) {
 }
 
 /**
- * テロップの編集欄
+ * 選んでいるテロップの編集欄
  * @param {HTMLElement} root
- * @param {Cue[]} cues
- * @param {number} durationUs
- * @param {() => void} onChange
+ * @param {import('./types.js').Cue|null} cue
+ * @param {{ onChange: () => void, onRemove: () => void }} hooks
  */
-export function renderCues(root, cues, durationUs, onChange) {
+export function renderCueEditor(root, cue, hooks) {
   root.innerHTML = '';
-  cues.forEach((cue, index) => {
-    const box = document.createElement('div');
-    box.className = 'cue';
+  if (!cue) {
+    const empty = document.createElement('span');
+    empty.className = 'small';
+    empty.textContent = t('tl.none');
+    root.append(empty);
+    return;
+  }
 
-    const text = document.createElement('input');
-    text.type = 'text';
-    text.value = cue.text;
-    text.placeholder = t('cap.text');
-    text.oninput = () => {
-      cue.text = text.value;
-      onChange();
-    };
+  const text = document.createElement('input');
+  text.type = 'text';
+  text.value = cue.text;
+  text.placeholder = t('cap.text');
+  text.oninput = () => {
+    cue.text = text.value;
+    hooks.onChange();
+  };
 
-    const line1 = document.createElement('div');
-    line1.className = 'line';
-    line1.append(text);
+  const remove = document.createElement('button');
+  remove.className = 'btn';
+  remove.textContent = t('cap.remove');
+  remove.onclick = hooks.onRemove;
 
-    const line2 = document.createElement('div');
-    line2.className = 'line';
-    line2.append(
-      labelled(t('cap.from'), numberInput(cue.startUs / 1e6, 0, durationUs / 1e6, (v) => {
-        cue.startUs = Math.round(v * 1e6);
-        if (cue.endUs <= cue.startUs) {
-          cue.endUs = Math.min(durationUs, cue.startUs + 1_000_000);
-        }
-        onChange();
-      })),
-      labelled(t('cap.to'), numberInput(cue.endUs / 1e6, 0, durationUs / 1e6, (v) => {
-        cue.endUs = Math.round(v * 1e6);
-        if (cue.endUs <= cue.startUs) {
-          cue.startUs = Math.max(0, cue.endUs - 1_000_000);
-        }
-        onChange();
-      })),
-      positionSeg(cue, onChange),
-      labelled(t('cap.size'), numberInput(cue.size, 0.5, 3, (v) => {
-        cue.size = v;
-        onChange();
-      }, 0.1)),
-    );
-
-    const remove = document.createElement('button');
-    remove.className = 'linkbtn warn';
-    remove.textContent = t('cap.remove');
-    remove.onclick = () => {
-      cues.splice(index, 1);
-      renderCues(root, cues, durationUs, onChange);
-      onChange();
-    };
-    line2.append(remove);
-
-    box.append(line1, line2);
-    root.append(box);
-  });
+  root.append(
+    text,
+    positionSeg(cue, hooks.onChange),
+    labelled(t('cap.size'), numberInput(cue.size, 0.5, 3, (v) => {
+      cue.size = v;
+      hooks.onChange();
+    }, 0.1)),
+    remove,
+  );
 }
 
 /**
+ * 上・中・下を選ぶ
  * @param {Cue} cue
  * @param {() => void} onChange
  */
@@ -144,16 +121,16 @@ function positionSeg(cue, onChange) {
   const seg = document.createElement('div');
   seg.className = 'seg';
   for (const pos of /** @type {const} */ (['top', 'middle', 'bottom'])) {
-    const b = document.createElement('button');
-    b.dataset.v = pos;
-    b.textContent = t(`pos.${pos}`);
-    b.className = cue.position === pos ? 'on' : '';
-    b.onclick = () => {
+    const button = document.createElement('button');
+    button.dataset.v = pos;
+    button.textContent = t(`pos.${pos}`);
+    button.className = cue.position === pos ? 'on' : '';
+    button.onclick = () => {
       cue.position = pos;
-      [...seg.children].forEach((c) => c.classList.toggle('on', c === b));
+      [...seg.children].forEach((c) => c.classList.toggle('on', c === button));
       onChange();
     };
-    seg.append(b);
+    seg.append(button);
   }
   return seg;
 }

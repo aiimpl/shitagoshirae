@@ -9,7 +9,8 @@ import { rasterizeBands, makeTextMeasurer, closeBitmaps, loadFonts } from './cap
 import { startConversion, CancelledError, outputName, warmUp } from './convert.js';
 import { saveBlob } from './save.js';
 import { formatBytes, formatEta, formatClock } from './progress.js';
-import { $, segment, renderMeta, renderWarnings, renderCues, Preview, describeProbe } from './ui.js';
+import { $, segment, renderMeta, renderWarnings, renderCueEditor, Preview, describeProbe } from './ui.js';
+import { Timeline } from './timeline.js';
 
 applyStatic(document);
 
@@ -47,6 +48,38 @@ video.playsInline = true;
 const preview = new Preview(/** @type {HTMLCanvasElement} */ ($('pv')));
 preview.setVideo(video);
 const measureText = makeTextMeasurer();
+
+/** @type {string|null} */
+let selectedCueId = null;
+
+const timeline = new Timeline($('timeline'), {
+  onTrim: (inUs, outUs) => {
+    settings.inUs = inUs;
+    settings.outUs = outUs;
+    seekPreview(inUs);
+    refresh();
+  },
+  onCues: () => {
+    drawCueEditor();
+    refresh();
+  },
+  onSelect: (id) => {
+    selectedCueId = id;
+    timeline.select(id);
+    drawCueEditor();
+  },
+  onSeek: (us) => seekPreview(us),
+});
+timeline.setVideo(video);
+
+/** 下見の再生位置を動かす @param {number} us */
+function seekPreview(us) {
+  const probe = state.probe;
+  if (!probe) {
+    return;
+  }
+  video.currentTime = Math.max(0, Math.min(probe.durationUs - 1000, us)) / 1e6;
+}
 
 // ---- 言語 ----
 $('bLang').onclick = () => {
@@ -118,44 +151,28 @@ segment($('segAudio'), settings.audio, (v) => {
   refresh();
 };
 
-const trimIn = /** @type {HTMLInputElement} */ ($('trimIn'));
-const trimOut = /** @type {HTMLInputElement} */ ($('trimOut'));
-for (const input of [trimIn, trimOut]) {
-  input.oninput = () => {
-    const probe = state.probe;
-    if (!probe) {
-      return;
-    }
-    let a = Number(trimIn.value);
-    let b = Number(trimOut.value);
-    if (b - a < 10) {
-      if (input === trimIn) {
-        a = Math.max(0, b - 10);
-        trimIn.value = String(a);
-      } else {
-        b = Math.min(1000, a + 10);
-        trimOut.value = String(b);
-      }
-    }
-    settings.inUs = Math.round(probe.durationUs * a / 1000);
-    settings.outUs = Math.round(probe.durationUs * b / 1000);
-    video.currentTime = settings.inUs / 1e6;
-    refresh();
-  };
-}
-
 $('bAddCue').onclick = () => {
-  const start = state.probe ? Math.min(settings.inUs + 500_000, settings.outUs - 1_000_000) : 0;
-  settings.cues.push({
+  const probe = state.probe;
+  if (!probe) {
+    return;
+  }
+  // いま見ているところに置く
+  const head = Math.round(video.currentTime * 1e6);
+  const startUs = Math.max(0, Math.min(head, probe.durationUs - 2_000_000));
+  const cue = {
     id: `c${Date.now()}`,
     text: '',
-    startUs: Math.max(settings.inUs, start),
-    endUs: Math.max(settings.inUs + 1_500_000, start + 2_000_000),
-    position: 'bottom',
+    startUs,
+    endUs: Math.min(probe.durationUs, startUs + 2_500_000),
+    position: /** @type {const} */ ('bottom'),
     size: 1,
     outline: true,
-  });
-  drawCues();
+  };
+  settings.cues.push(cue);
+  selectedCueId = cue.id;
+  timeline.setCues(settings.cues);
+  timeline.select(cue.id);
+  drawCueEditor();
   refresh();
 };
 
@@ -179,6 +196,7 @@ function show(name) {
   $('error').hidden = name !== 'error';
   if (name === 'work') {
     preview.start();
+    startTick();
     // 設定をいじっている間に、変換の係を読み込んでおく（押してから読むと、回線がない場で始められない）
     warmUp();
   } else {
@@ -225,23 +243,39 @@ async function load(file) {
     settings.outUs = probe.durationUs;
     // 元が縦長なら、そのままの形を既定にする
     settings.shape = 'keep';
-    trimIn.value = '0';
-    trimOut.value = '1000';
     video.src = URL.createObjectURL(file);
     video.currentTime = 0;
     await video.play().catch(() => undefined);
     renderMeta($('inmeta'), describeProbe(probe));
-    drawCues();
+    selectedCueId = null;
+    timeline.setRange(probe.durationUs, 0, probe.durationUs);
+    timeline.setCues(settings.cues);
+    drawCueEditor();
     refresh();
     show('work');
+    // コマ送りの絵は、画面を出してから作る（少し時間がかかるため）
+    timeline.buildThumbnails(video, probe.durationUs).catch(() => undefined);
   } catch (err) {
     console.error(err);
     fail(t('err.read'));
   }
 }
 
-function drawCues() {
-  renderCues($('cues'), settings.cues, state.probe ? state.probe.durationUs : 0, () => refresh());
+function drawCueEditor() {
+  const cue = settings.cues.find((c) => c.id === selectedCueId) || null;
+  renderCueEditor($('cueEdit'), cue, {
+    onChange: () => {
+      timeline.setCues(settings.cues);
+      refresh();
+    },
+    onRemove: () => {
+      settings.cues = settings.cues.filter((c) => c.id !== selectedCueId);
+      selectedCueId = null;
+      timeline.setCues(settings.cues);
+      drawCueEditor();
+      refresh();
+    },
+  });
 }
 
 /** 設定が変わるたびに、計画と下見を作り直す */
@@ -278,7 +312,7 @@ function refresh() {
     [t('in.bitrate'), `${(plan.video.bitrateBps / 1e6).toFixed(1)} Mbps`],
     [t('out.estimate'), formatBytes(estimated)],
   ]);
-  $('trimLabel').textContent = `${formatClock(plan.trim.inUs)} 〜 ${formatClock(plan.trim.outUs)}`;
+  $('trimLabel').textContent = `${formatClock(plan.trim.inUs)} 〜 ${formatClock(plan.trim.outUs)}（${formatClock(plan.trim.durationUs)}）`;
   $('audioNote').textContent = plan.audio.mode === 'copy' ? '' : t(plan.audio.reason);
   renderWarnings($('warns'), plan.warnings);
   /** @type {HTMLButtonElement} */ ($('bConvert')).disabled = plan.blocked;
@@ -369,6 +403,24 @@ async function save() {
   if (how !== 'cancelled') {
     $('saveNote').textContent = `${t('run.saved')} ${t('run.savedNote')}`;
   }
+}
+
+/** 再生位置の線を動かし続ける */
+let ticking = false;
+function startTick() {
+  if (ticking) {
+    return;
+  }
+  ticking = true;
+  const loop = () => {
+    if ($('work').hidden) {
+      ticking = false;
+      return;
+    }
+    timeline.tick();
+    requestAnimationFrame(loop);
+  };
+  requestAnimationFrame(loop);
 }
 
 show('drop');
