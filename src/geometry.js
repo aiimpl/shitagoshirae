@@ -68,22 +68,29 @@ export function coverRect(srcW, srcH, boxW, boxH) {
 
 /**
  * 覆い尽くすために、元の画のどこを読むか（0〜1の割合で返す）
+ * offsetX・offsetY は -1〜1。0なら真ん中、1なら端いっぱいまで寄せる
  * @param {number} srcW
  * @param {number} srcH
  * @param {number} boxW
  * @param {number} boxH
+ * @param {number} [offsetX]
+ * @param {number} [offsetY]
  * @returns {Rect}
  */
-export function coverCropUv(srcW, srcH, boxW, boxH) {
+export function coverCropUv(srcW, srcH, boxW, boxH, offsetX = 0, offsetY = 0) {
   const srcAspect = srcW / srcH;
   const boxAspect = boxW / boxH;
+  const shift = (size, offset) => {
+    const slack = (1 - size) / 2;
+    return slack + slack * Math.max(-1, Math.min(1, offset));
+  };
   if (srcAspect > boxAspect) {
     // 元のほうが横長：左右を捨てる
     const w = boxAspect / srcAspect;
-    return { x: (1 - w) / 2, y: 0, w, h: 1 };
+    return { x: shift(w, offsetX), y: 0, w, h: 1 };
   }
   const h = srcAspect / boxAspect;
-  return { x: 0, y: (1 - h) / 2, w: 1, h };
+  return { x: 0, y: shift(h, offsetY), w: 1, h };
 }
 
 /**
@@ -161,7 +168,7 @@ export function outputSize(a) {
 /**
  * 回転・出力の大きさ・映像を置く場所・読む範囲を、まとめて決める
  * @param {{ codedWidth: number, codedHeight: number, rotation: Rotation }} src
- * @param {{ shape: Shape, pad: PadMode, baseSide: number }} want
+ * @param {{ shape: Shape, pad: PadMode, baseSide: number, cropX?: number, cropY?: number }} want
  * @returns {Geometry}
  */
 export function planGeometry(src, want) {
@@ -178,7 +185,7 @@ export function planGeometry(src, want) {
 
   const crop = want.pad === 'crop';
   const sourceUv = crop
-    ? coverCropUv(disp.w, disp.h, outWidth, outHeight)
+    ? coverCropUv(disp.w, disp.h, outWidth, outHeight, want.cropX || 0, want.cropY || 0)
     : { x: 0, y: 0, w: 1, h: 1 };
   const foreground = crop
     ? { x: 0, y: 0, w: outWidth, h: outHeight }

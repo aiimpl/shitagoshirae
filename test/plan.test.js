@@ -15,6 +15,7 @@ import {
   codecCandidates,
   parseColor,
   baseSideFor,
+  outputFps,
   buildPlan,
   X,
 } from '../src/plan.js';
@@ -57,6 +58,9 @@ function sampleSettings(over = {}) {
     resolution: '1080p',
     segments: [{ id: 's0', startUs: 0, endUs: 40_000_000 }],
     fade: false,
+    speed: 1,
+    cropX: 0,
+    cropY: 0,
     sizeMode: 'quality',
     targetBytes: 30 * 1024 * 1024,
     quality: 'high',
@@ -288,4 +292,53 @@ test('ふわっと出し入れは、短い動画では短くなる', () => {
   assert.ok(short.video.fadeUs <= 200_000);
   const off = buildPlan(sampleProbe(), sampleSettings({ fade: false }));
   assert.equal(off.video.fadeUs, 0);
+});
+
+test('速さを上げると、出来上がりの長さが縮む', () => {
+  const plan = buildPlan(sampleProbe(), sampleSettings({ speed: 2 }));
+  assert.equal(plan.trim.speed, 2);
+  assert.equal(plan.trim.durationUs, 20_000_000);
+  assert.equal(plan.audio.mode, 'drop');
+});
+
+test('速さを変えると、音は消える（音つきの動画でも）', () => {
+  const withAudio = sampleProbe({
+    audio: { codec: 'aac', codecString: 'mp4a.40.2', sampleRate: 48000, channels: 2, bitrateBps: 128_000, packetUs: 21_333, firstPacketUs: 0 },
+  });
+  assert.equal(buildPlan(withAudio, sampleSettings({ speed: 1 })).audio.mode, 'copy');
+  const fast = buildPlan(withAudio, sampleSettings({ speed: 1.5 }));
+  assert.equal(fast.audio.mode, 'drop');
+  assert.equal(fast.audio.reason, 'a.speed');
+});
+
+test('速さを当てると、テロップの時刻もそのぶん早くなる', () => {
+  const trim = planCuts({
+    segments: [{ id: 'a', startUs: 0, endUs: 20_000_000 }],
+    durationUs: 20_000_000,
+    keyframeUs: [0],
+    audioPacketUs: 0,
+    audioFirstUs: 0,
+    speed: 2,
+  });
+  assert.deepEqual(toOutputTimes(10_000_000, 14_000_000, trim.cuts, 2), [
+    { startUs: 5_000_000, endUs: 7_000_000 },
+  ]);
+});
+
+test('切り抜く位置を寄せると、読む範囲がずれる', () => {
+  const middle = buildPlan(sampleProbe(), sampleSettings({ shape: '9:16', pad: 'crop', cropX: 0 }));
+  const left = buildPlan(sampleProbe(), sampleSettings({ shape: '9:16', pad: 'crop', cropX: -1 }));
+  const right = buildPlan(sampleProbe(), sampleSettings({ shape: '9:16', pad: 'crop', cropX: 1 }));
+  assert.ok(left.video.geometry.sourceUv.x < middle.video.geometry.sourceUv.x);
+  assert.ok(right.video.geometry.sourceUv.x > middle.video.geometry.sourceUv.x);
+  assert.equal(left.video.geometry.sourceUv.x, 0);
+  assert.ok(Math.abs(right.video.geometry.sourceUv.x + right.video.geometry.sourceUv.w - 1) < 1e-9);
+});
+
+test('40fpsを超えるときは30fpsに落とす（Xのウェブ投稿の上限のため）', () => {
+  assert.equal(outputFps(30, 60), 30);
+  assert.equal(outputFps(45, 60), 30);   // 30fpsを1.5倍速にした場合
+  assert.equal(outputFps(60, 60), 30);
+  assert.equal(outputFps(24, 60), 24);
+  assert.equal(outputFps(30, 24), 24);
 });

@@ -146,7 +146,7 @@ function layoutOne(cues, position, segment, out, measureText) {
       y: 0,
       w: width,
       h: height,
-      fill: style === 'chip' ? (cues[0].color || '#ff5a45') : 'rgba(0,0,0,0.78)',
+      fill: style === 'chip' ? (cues[0].color === '#ffffff' ? '#ff5a45' : (cues[0].color || '#ff5a45')) : 'rgba(0,0,0,0.78)',
     });
   }
   let cursorY = padY;

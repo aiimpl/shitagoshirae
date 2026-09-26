@@ -93,6 +93,7 @@ export async function run(file, plan, captions, hooks) {
   });
 
   const sink = new VideoSampleSink(videoTrack);
+  const speed = plan.trim.speed || 1;
   const totalUs = Math.max(1, plan.trim.durationUs);
   let frames = 0;
   let lastOutUs = -1;
@@ -129,7 +130,7 @@ export async function run(file, plan, captions, hooks) {
           sample.close();
           break;
         }
-        const outUs = cut.outStartUs + (srcUs - cut.inUs);
+        const outUs = cut.outStartUs + Math.round((srcUs - cut.inUs) / speed);
         if (outUs <= lastOutUs) {
           sample.close();
           continue;
@@ -140,7 +141,7 @@ export async function run(file, plan, captions, hooks) {
         }
 
         const overlays = pickCaptions(captions, outUs);
-        const duration = sample.microsecondDuration || plan.video.minFrameDeltaUs;
+        const duration = Math.round((sample.microsecondDuration || plan.video.minFrameDeltaUs) / speed);
         const frame = sample.toVideoFrame();
         openFrames++;
         /** @type {OffscreenCanvas} */

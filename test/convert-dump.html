@@ -31,8 +31,9 @@ window.__convert = async (url, over, saveName) => {
   const probe = await probeFile(file);
   const settings = {
     shape: 'keep', pad: 'blur', padColor: '#101418', blurStrength: 0.5, resolution: '1080p',
-    inUs: 0, outUs: probe.durationUs, sizeMode: 'quality', targetBytes: 30 * 1024 * 1024,
-    quality: 'high', maxFps: 30, audio: 'copy', cues: [], ...over,
+    segments: [{ id: 's0', startUs: 0, endUs: probe.durationUs }], fade: false, speed: 1, cropX: 0, cropY: 0,
+    sizeMode: 'quality', targetBytes: 30 * 1024 * 1024,
+    quality: 'high', maxFps: 60, audio: 'copy', cues: [], ...over,
   };
   const plan = buildPlan(probe, settings);
   log(`計画: ${plan.video.width}x${plan.video.height} ${(plan.video.bitrateBps / 1e6).toFixed(2)}Mbps 音声:${plan.audio.mode}`);

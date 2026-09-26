@@ -128,10 +128,11 @@ export function planCut(a) {
  * 使う区間をつないだときの、全体の計画を作る
  * 重なりや前後の入れ違いはここで整える
  * @param {{ segments: import('./types.js').Segment[], durationUs: number, keyframeUs: number[],
- *           audioPacketUs: number, audioFirstUs: number }} a
+ *           audioPacketUs: number, audioFirstUs: number, speed?: number }} a
  * @returns {import('./types.js').PlanTrim}
  */
 export function planCuts(a) {
+  const speed = a.speed && a.speed > 0 ? a.speed : 1;
   const ranges = normalizeSegments(a.segments, a.durationUs);
   /** @type {import('./types.js').PlanCut[]} */
   const cuts = [];
@@ -151,10 +152,11 @@ export function planCuts(a) {
       continue;
     }
     cuts.push(cut);
-    outStartUs += cut.outUs - cut.inUs;
+    // 速さを当てた長さを足していく（2倍速なら半分の長さになる）
+    outStartUs += Math.round((cut.outUs - cut.inUs) / speed);
     avOffsetUs = Math.max(avOffsetUs, cut.avOffsetUs);
   }
-  return { cuts, durationUs: outStartUs, avOffsetUs };
+  return { cuts, durationUs: outStartUs, avOffsetUs, speed };
 }
 
 /**
@@ -164,7 +166,7 @@ export function planCuts(a) {
  * @returns {{ startUs: number, endUs: number }[]}
  */
 export function normalizeSegments(segments, durationUs) {
-  const clean = segments
+  const clean = (segments || [])
     .map((s) => ({
       startUs: Math.max(0, Math.min(s.startUs, durationUs)),
       endUs: Math.max(0, Math.min(s.endUs, durationUs)),
@@ -190,9 +192,10 @@ export function normalizeSegments(segments, durationUs) {
  * @param {number} startUs
  * @param {number} endUs
  * @param {import('./types.js').PlanCut[]} cuts
+ * @param {number} [speed]
  * @returns {{ startUs: number, endUs: number }[]}
  */
-export function toOutputTimes(startUs, endUs, cuts) {
+export function toOutputTimes(startUs, endUs, cuts, speed = 1) {
   /** @type {{ startUs: number, endUs: number }[]} */
   const out = [];
   for (const cut of cuts) {
@@ -202,8 +205,8 @@ export function toOutputTimes(startUs, endUs, cuts) {
       continue;
     }
     out.push({
-      startUs: cut.outStartUs + (from - cut.inUs),
-      endUs: cut.outStartUs + (to - cut.inUs),
+      startUs: cut.outStartUs + Math.round((from - cut.inUs) / speed),
+      endUs: cut.outStartUs + Math.round((to - cut.inUs) / speed),
     });
   }
   return out;
@@ -314,8 +317,8 @@ export function checkXLimits(plan, probe, estimatedBytes) {
   if (plan.video.geometry.clampedAspect) {
     out.push({ level: 'info', code: 'w.aspectClamped' });
   }
-  if (plan.video.maxFps > X.webMaxFps) {
-    out.push({ level: 'info', code: 'w.fpsOverWeb', args: { fps: plan.video.maxFps } });
+  if (probe.video && Math.round(probe.video.fps * (plan.trim.speed || 1)) > plan.video.maxFps) {
+    out.push({ level: 'info', code: 'w.fpsDropped', args: { fps: plan.video.maxFps } });
   }
   // 再生画質は短いほうの辺で決まる（縦動画の 720x1280 は「720p」）
   if (Math.min(plan.video.width, plan.video.height) > X.freePlaybackHeight) {
@@ -340,6 +343,19 @@ export function checkXLimits(plan, probe, estimatedBytes) {
     out.push({ level: 'info', code: 'w.avOffset', args: { ms: Math.round(plan.trim.avOffsetUs / 1000) } });
   }
   return out;
+}
+
+/**
+ * 書き出すフレームレートを決める
+ * Xのウェブ投稿は40fpsまでなので、それを超えるときは30fpsに落とす
+ * （45fpsのような半端な値のままだと、投稿で弾かれることがある）
+ * @param {number} sourceFps
+ * @param {number} wantFps
+ * @returns {number}
+ */
+export function outputFps(sourceFps, wantFps) {
+  const fps = Math.min(wantFps, X.maxFps, sourceFps);
+  return fps > X.webMaxFps ? 30 : fps;
 }
 
 /**
@@ -371,14 +387,19 @@ export function buildPlan(probe, settings) {
     return {
       video: emptyVideoPlan(),
       audio: { mode: 'drop', reason: 'a.none', bitrateBps: 0 },
-      trim: { cuts: [], durationUs: 0, avOffsetUs: 0 },
+      trim: { cuts: [], durationUs: 0, avOffsetUs: 0, speed: 1 },
       warnings: [{ level: 'block', code: 'w.noVideo' }],
       blocked: true,
     };
   }
 
-  const audio = decideAudioCopy(probe.audio, settings.audio);
+  // 速さを変えると音は作り直しになるので、この道具では音を消す
+  const wantAudio = settings.speed !== 1 ? 'mute' : settings.audio;
+  const audio = settings.speed !== 1 && probe.audio
+    ? { mode: /** @type {const} */ ('drop'), reason: 'a.speed', bitrateBps: 0 }
+    : decideAudioCopy(probe.audio, wantAudio);
   const trim = planCuts({
+    speed: settings.speed || 1,
     segments: settings.segments,
     durationUs: probe.durationUs,
     keyframeUs: v.keyframeUs,
@@ -392,10 +413,14 @@ export function buildPlan(probe, settings) {
       shape: settings.shape,
       pad: settings.pad,
       baseSide: baseSideFor(settings.resolution, v.displayWidth, v.displayHeight),
+      cropX: settings.cropX,
+      cropY: settings.cropY,
     },
   );
 
-  const maxFps = Math.min(settings.maxFps, X.maxFps, Math.max(1, Math.round(v.fps)));
+  // 速さを上げると、1秒あたりのコマ数も増える
+  const sourceFps = Math.max(1, Math.round(v.fps * (settings.speed || 1)));
+  const maxFps = outputFps(sourceFps, settings.maxFps);
   const bitrateBps = settings.sizeMode === 'size'
     ? bitrateForTargetSize({
       targetBytes: settings.targetBytes,

@@ -104,6 +104,7 @@ export function renderCueEditor(root, cue, hooks) {
   root.append(
     text,
     styleSeg(cue, hooks.onChange),
+    colorPicker(cue, hooks.onChange),
     positionSeg(cue, hooks.onChange),
     labelled(t('cap.size'), numberInput(cue.size, 0.5, 3, (v) => {
       cue.size = v;
@@ -115,6 +116,33 @@ export function renderCueEditor(root, cue, hooks) {
     }, 0.02)),
     remove,
   );
+}
+
+// テロップに使える色（白は文字の色、ほかは帯の色にもなる）
+const CUE_COLORS = ['#ffffff', '#ffd83d', '#ff5a45', '#14b88a', '#41a7e0', '#7a6cf0'];
+
+/**
+ * テロップの色を選ぶ
+ * @param {Cue} cue
+ * @param {() => void} onChange
+ */
+function colorPicker(cue, onChange) {
+  const wrap = document.createElement('span');
+  wrap.className = 'small colors';
+  wrap.append(t('cap.color') + ' ');
+  for (const color of CUE_COLORS) {
+    const dot = document.createElement('button');
+    dot.className = 'dot' + ((cue.color || '#ffffff') === color ? ' on' : '');
+    dot.style.background = color;
+    dot.title = color;
+    dot.onclick = () => {
+      cue.color = color;
+      [...wrap.querySelectorAll('.dot')].forEach((d) => d.classList.toggle('on', d === dot));
+      onChange();
+    };
+    wrap.append(dot);
+  }
+  return wrap;
 }
 
 /**

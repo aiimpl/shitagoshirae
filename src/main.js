@@ -25,6 +25,9 @@ const settings = {
   resolution: '720p',
   segments: [],
   fade: false,
+  speed: 1,
+  cropX: 0,
+  cropY: 0,
   sizeMode: 'quality',
   targetBytes: 30 * 1024 * 1024,
   quality: 'high',
@@ -145,6 +148,10 @@ segment($('segFade'), settings.fade ? 'on' : 'off', (v) => {
   settings.fade = v === 'on';
   refresh();
 });
+segment($('segSpeed'), String(settings.speed), (v) => {
+  settings.speed = Number(v);
+  refresh();
+});
 segment($('segAudio'), settings.audio, (v) => {
   settings.audio = /** @type {any} */ (v);
   refresh();
@@ -219,6 +226,13 @@ function paintSegmentButtons() {
   const canSplit = settings.segments.some((s) => head > s.startUs + 200_000 && head < s.endUs - 200_000);
   /** @type {HTMLButtonElement} */ ($('bSplit')).disabled = !canSplit;
   /** @type {HTMLButtonElement} */ ($('bDropSeg')).disabled = !selectedSegmentId || settings.segments.length < 2;
+}
+
+for (const axis of /** @type {const} */ (['cropX', 'cropY'])) {
+  /** @type {HTMLInputElement} */ ($(axis)).oninput = (e) => {
+    settings[axis] = Number(/** @type {HTMLInputElement} */ (e.target).value);
+    refresh();
+  };
 }
 
 $('bConvert').onclick = () => convert();
@@ -361,6 +375,10 @@ function refresh() {
     ? t('tl.cuts', plan.trim.cuts.length, formatClock(plan.trim.durationUs))
     : t('tl.one', formatClock(plan.trim.durationUs));
   $('audioNote').textContent = plan.audio.mode === 'copy' ? '' : t(plan.audio.reason);
+  // 切り抜きのときだけ、位置を決める欄を出す
+  $('rowCrop').hidden = settings.pad !== 'crop';
+  /** @type {HTMLInputElement} */ ($('cropX')).value = String(settings.cropX);
+  /** @type {HTMLInputElement} */ ($('cropY')).value = String(settings.cropY);
   renderWarnings($('warns'), plan.warnings);
   /** @type {HTMLButtonElement} */ ($('bConvert')).disabled = plan.blocked;
   $('estimate').textContent = plan.blocked ? '' : `${t('out.estimate')} ${formatBytes(estimated)}`;
@@ -371,16 +389,17 @@ function refresh() {
  * 落とした区間にかかっていたら、残ったところだけに切り分ける
  * @param {import('./types.js').Cue[]} cues
  * @param {import('./types.js').PlanCut[]} cuts
+ * @param {number} speed
  * @returns {import('./types.js').Cue[]}
  */
-function toOutputCues(cues, cuts) {
+function toOutputCues(cues, cuts, speed) {
   /** @type {import('./types.js').Cue[]} */
   const out = [];
   for (const cue of cues) {
     if (!cue.text.trim()) {
       continue;
     }
-    for (const range of toOutputTimes(cue.startUs, cue.endUs, cuts)) {
+    for (const range of toOutputTimes(cue.startUs, cue.endUs, cuts, speed)) {
       out.push({ ...cue, id: `${cue.id}@${range.startUs}`, startUs: range.startUs, endUs: range.endUs });
     }
   }
@@ -400,7 +419,7 @@ async function convert() {
   /** @type {import('./types.js').CaptionBitmap[]} */
   let captions = [];
   try {
-    const outCues = toOutputCues(settings.cues, plan.trim.cuts);
+    const outCues = toOutputCues(settings.cues, plan.trim.cuts, plan.trim.speed);
     if (outCues.length) {
       const bands = buildCaptionTimeline(outCues).flatMap((seg) => layoutCaptionSegment(seg, {
         width: plan.video.width,

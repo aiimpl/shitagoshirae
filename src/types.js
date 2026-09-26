@@ -91,6 +91,9 @@
  * @property {'720p'|'1080p'|'source'} resolution
  * @property {Segment[]} segments     つないで書き出す区間（元の動画の時刻）
  * @property {boolean} fade           最初と最後をふわっと出し入れする
+ * @property {number} speed           再生の速さ（1・1.5・2）。1以外にすると音は消える
+ * @property {number} cropX           切り抜くときの左右の位置（-1〜1。0が真ん中）
+ * @property {number} cropY           切り抜くときの上下の位置（-1〜1。0が真ん中）
  * @property {'size'|'quality'} sizeMode
  * @property {number} targetBytes
  * @property {'low'|'medium'|'high'} quality
@@ -178,8 +181,9 @@
 /**
  * @typedef {Object} PlanTrim
  * @property {PlanCut[]} cuts        つなぐ順に並んでいる
- * @property {number} durationUs     出来上がりの長さ（合計）
+ * @property {number} durationUs     出来上がりの長さ（速さを当てたあとの合計）
  * @property {number} avOffsetUs     いちばん大きい音のずれ
+ * @property {number} speed          再生の速さ
  */
 
 /**
