@@ -5,7 +5,7 @@ import { openTab } from './cdp.mjs';
 const BASE = process.env.BASE || 'http://127.0.0.1:8777';
 const files = process.argv.slice(2);
 if (files.length === 0) {
-  files.push('samples/opus5_vs_opus55_40s.mp4', 'samples/juppun_30s.mp4');
+  files.push('samples/heavy-1080p-40s.mp4', 'samples/juppun_30s.mp4');
 }
 
 const tab = await openTab(`${BASE}/test/probe-dump.html`);

@@ -53,6 +53,10 @@ const S = {
   'tl.trimLane': ['使うところ', 'In use'],
   'tl.selected': ['選んでいるテロップ', 'Selected caption'],
   'tl.none': ['テロップを足すと、ここに出ます', 'Add a caption and it will appear here'],
+  'tl.loadSrt': ['SRTを読む', 'Load SRT'],
+  'tl.srtLoaded': ['{n}本のテロップを読みました', 'Loaded {n} captions'],
+  'tl.srtNone': ['読めるテロップがありませんでした', 'No readable captions in that file'],
+  'tl.srtSkipped': ['（{n}か所は読めずに飛ばしました）', '({n} block(s) skipped)'],
   'tl.newCue': ['ここに足す', 'Add here'],
   'tl.empty': ['（文字を入れる）', '(type your text)'],
   'tl.split': ['ここで切る', 'Split here'],
@@ -178,11 +182,13 @@ const S = {
   'about.title': ['この道具について', 'About this tool'],
   'about.body': [
     '動画はサーバーに送りません。読み込みも、ぼかしも、書き出しも、すべてこのページの中だけで行います。'
-    + 'このページは、自分のファイル（プログラムとフォント）を読む以外、どこへも通信できない設定にしてあります'
-    + '（HTMLの先頭に書いてある Content-Security-Policy がそれです）。開発者ツールの通信タブで確かめられます。',
+    + 'このページには、自分のファイル（プログラムとフォント）を読む以外の通信を禁じる設定を入れてあります'
+    + '（HTMLの先頭に書いてある Content-Security-Policy がそれです）。'
+    + 'コードのどこにも外へ送る処理は書いていないので、開発者ツールの通信タブで実際に確かめられます。',
     'Your video is never sent to a server. Reading, blurring and encoding all happen inside this page. '
-    + 'The page is configured so that it cannot talk to anywhere else at all — it may only load its own files '
-    + '(the code and the fonts). That is the Content-Security-Policy at the top of the HTML, and you can check it in the network tab.',
+    + 'The page carries a Content-Security-Policy (at the top of the HTML) that forbids every request except loading '
+    + 'its own files — the code and the fonts. There is no code anywhere that sends anything out, and you can '
+    + 'confirm that in the network tab.',
   ],
   'about.repo': ['コードはすべて公開しています', 'All of the code is public'],
 };
@@ -235,6 +241,10 @@ export function t(key, ...args) {
   return text.replace(/\{(\d)\}/g, (_, i) => String(args[Number(i)] ?? ''));
 }
 
+// 中に印（<b> など）を含んでよい文。ここに挙げたものだけ HTML として流し込む。
+// t() の差し込みは escape しないので、それ以外は必ず文字として入れる
+const MARKUP_OK = new Set(['tagline']);
+
 /**
  * HTML の data-t（中身）と data-tp（入力欄のヒント）を差し替える
  * @param {Document|HTMLElement} scope
@@ -244,7 +254,12 @@ export function applyStatic(scope) {
     scope.documentElement.lang = lang;
   }
   for (const el of scope.querySelectorAll('[data-t]')) {
-    el.innerHTML = t(/** @type {string} */ (el.getAttribute('data-t')));
+    const key = /** @type {string} */ (el.getAttribute('data-t'));
+    if (MARKUP_OK.has(key)) {
+      el.innerHTML = t(key);
+    } else {
+      el.textContent = t(key);
+    }
   }
   for (const el of scope.querySelectorAll('[data-tp]')) {
     /** @type {HTMLInputElement} */ (el).placeholder = t(/** @type {string} */ (el.getAttribute('data-tp')));

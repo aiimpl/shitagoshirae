@@ -13,7 +13,7 @@ X に上げる動画を、投稿に向いた形に整えるブラウザの道具
 - **出だしと終わりをふわっと**：真っ暗から入って、真っ暗に抜けます
 - **画質とサイズ**：画質で決めるか、目標のサイズ（例：30MB）から逆算するか
 - **音はそのまま**：音声は作り直さずに詰め替えるので、劣化しません。消すこともできます
-- **テロップを焼き込む**：文字・出す時間・位置（上/中/下）・大きさ・上下の微調整。見せ方は3つ（白文字＋フチ／黒帯／色帯）。Xは音を出さずに再生されることが多いので、ここが効きます
+- **テロップを焼き込む**：文字・出す時間・位置（上/中/下）・大きさ・色・上下の微調整。見せ方は3つ（白文字＋フチ／黒帯／色帯）。**SRT（字幕ファイル）をまとめて読み込めます**。Xは音を出さずに再生されることが多いので、ここが効きます
 - **iPhone の動画を直す**：HEVC（iPhoneの既定）を H.264 に、縦撮りの回転を正しい向きに直します
 
 ## 使い方
@@ -23,7 +23,7 @@ X に上げる動画を、投稿に向いた形に整えるブラウザの道具
    - 帯をクリックすると、そこへ飛びます
    - 黄色いつまみを引くと、使うところの端が動きます
    - 「ここで切る」で区間を2つに割り、いらないほうを選んで「この区間を落とす」
-   - 「ここに足す」でテロップを置き、色の帯をつかんで動かします
+   - 「ここに足す」でテロップを置き、色の帯をつかんで動かします。字幕ファイルがあるなら「SRTを読む」でまとめて置けます
 4. 「変換する」を押す。途中でやめられます
 5. 「保存する」を押して、出来たファイルを保存します
 
@@ -62,12 +62,15 @@ X に上げる動画を、投稿に向いた形に整えるブラウザの道具
 - 重い処理は Web Worker に置いています。画面は止まりませんし、途中でやめられます
 - かたちの計算・ビットレート・切り出し位置は純粋な計算に切り出してあり、ブラウザなしで検証できます（`npm test`）
 - 回転は合成のときに画へ焼き込み、出力には回転情報を残しません（二重に回るのを防ぐため）
-- **このページは、自分のファイル（プログラムとフォント）を読む以外、どこへも通信できません。** HTML の先頭の `Content-Security-Policy` で禁じています
+- **外へ送る処理は、コードのどこにも書いてありません。** `src/` を `fetch`・`XMLHttpRequest`・`WebSocket`・`sendBeacon` で探しても1件も出ません。変換中の通信が0件であることは開発者ツールの通信タブで確かめられます
+- 加えて HTML の先頭の `Content-Security-Policy`（`connect-src 'none'`）で、画面側からの通信を止めてあります。厳密にはこの指定が効くのは画面そのものだけで、Web Worker は配信元が返すヘッダに従います（GitHub Pages はヘッダを付けられません）。**証拠はコードと通信タブのほうで、CSP は念押し**という順です
 
 ## 直したい人へ
 - `node tools/serve.mjs` で開いて、`npm test`（計算の検証）と `npx -y -p typescript@5.7 tsc --noEmit -p jsconfig.json`（型の検査）が通ることを確かめてください
 - 実機での確認は `node tools/make-samples.mjs`（試験素材を作る）→ `node tools/check-convert.mjs`（変換して ffprobe で検査）→ `node tools/check-ui.mjs`（画面を操作して通す）
 - ライブラリを足すときは **MIT / BSD / Apache-2.0 / MPL-2.0（無改変）** のみにしてください。GPL・LGPL のものは入れません。README の表と `vendor/*/LICENSE` も更新してください
+- `tools/serve.mjs` は手元専用です。127.0.0.1 にしか耳を貸さず、`Host` と `Origin` が自分のものかを見てから受けます（動かしている間、同じパソコンで開いている別のページから叩かれないように）
+- `test/` と `tools/` は `_config.yml` で公開対象から外しています。置き場に上げる意味がなく、`test/*.html` には CSP を書いていないためです
 
 ## 同梱しているもの（サードパーティ）
 | 内容 | 場所 | ライセンス |
@@ -81,11 +84,11 @@ X に上げる動画を、投稿に向いた形に整えるブラウザの道具
 **Shitagoshirae** gets a video ready to post on X — reshape it, pad it with a blurred background, trim it, hit a target file size, and burn in captions. **Your video is never uploaded.** Everything happens inside your browser.
 
 - **Use it:** https://aiimpl.github.io/shitagoshirae/ — no sign-up, no server, nothing to install.
-- **What it does:** shape (keep / 16:9 / 1:1 / 9:16) with blurred, solid or cropped padding; a timeline where you split the clip and drop the parts you do not want; fade in/out; quality or target-size encoding; audio carried through untouched (or muted); burned-in captions in three styles (outlined, black bar, colour chip). It also converts iPhone HEVC to H.264 and bakes in rotation, which is what usually breaks portrait phone videos.
+- **What it does:** shape (keep / 16:9 / 1:1 / 9:16) with blurred, solid or cropped padding; a timeline where you split the clip and drop the parts you do not want; fade in/out; quality or target-size encoding; audio carried through untouched (or muted); burned-in captions in three styles (outlined, black bar, colour chip), typed in or loaded from an SRT file. It also converts iPhone HEVC to H.264 and bakes in rotation, which is what usually breaks portrait phone videos.
 - **Browsers:** Chrome, Edge, Safari 26+, and desktop Firefox. Firefox on Android has no WebCodecs and cannot run it. The page tells you plainly when it cannot work.
 - **Speed:** a 40-second 1920×1080 clip takes about 5 seconds to re-encode at 1080p on an M5 Mac in Chrome — roughly 8× faster than real time.
 - **How it works:** WebCodecs for decode/encode, [mediabunny](https://github.com/Vanilagy/mediabunny) for MP4 reading and writing, WebGL2 for the blur and layout, all inside a Web Worker. No server, no API, no upload.
-- **It cannot phone home:** the page's `Content-Security-Policy` forbids every request except loading its own code and fonts. Open the network tab and check.
+- **It does not phone home:** there is no `fetch`, `XMLHttpRequest`, `WebSocket` or `sendBeacon` anywhere in `src/` — grep it — and the network tab stays empty while converting. The page also carries a `Content-Security-Policy` with `connect-src 'none'`; note that a `<meta>` CSP governs the document, not a Worker loaded over https (GitHub Pages cannot send headers), so the code and the network tab are the evidence and the CSP is the belt-and-braces.
 - **Known limits:** HDR to SDR conversion is left to the browser and can shift colors; X always re-encodes what you upload, so some quality is lost on their side no matter what; audio is never re-encoded (Firefox cannot encode AAC), so formats other than AAC-LC become silent.
 
 Built with Claude Opus 5.5.

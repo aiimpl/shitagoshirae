@@ -1,0 +1,12 @@
+# GitHub Pages（Jekyll）の設定。公開する必要のないものは配らない
+#
+# test/ と tools/ は手元で動かすためのもので、置き場に上げる意味がない。
+# とくに test/*.html は Content-Security-Policy を書いていないので、
+# 本体と同じ場所に、守りのない画面を並べないようにしている
+exclude:
+  - test
+  - tools
+  - jsconfig.json
+  - package.json
+  - package-lock.json
+  - node_modules

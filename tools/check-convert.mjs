@@ -9,19 +9,19 @@ const BASE = process.env.BASE || 'http://127.0.0.1:8777';
 const CASES = [
   {
     name: 'そのまま1080p',
-    source: 'samples/opus5_vs_opus55_40s.mp4',
+    source: 'samples/heavy-1080p-40s.mp4',
     settings: { shape: 'keep', resolution: '1080p', sizeMode: 'quality', quality: 'high' },
     want: { width: 1920, height: 1080, expectAudio: false },
   },
   {
     name: '目標30MB',
-    source: 'samples/opus5_vs_opus55_40s.mp4',
+    source: 'samples/heavy-1080p-40s.mp4',
     settings: { shape: 'keep', resolution: '1080p', sizeMode: 'size', targetBytes: 30 * 1024 * 1024 },
     want: { width: 1920, height: 1080, maxBytes: 33 * 1024 * 1024, expectAudio: false },
   },
   {
     name: '縦9:16・ぼかし余白',
-    source: 'samples/opus5_vs_opus55_40s.mp4',
+    source: 'samples/heavy-1080p-40s.mp4',
     settings: { shape: '9:16', pad: 'blur', resolution: '720p', sizeMode: 'quality', quality: 'medium' },
     want: { width: 720, height: 1280, expectAudio: false },
   },

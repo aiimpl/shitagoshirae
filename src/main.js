@@ -4,7 +4,7 @@
 import { t, lang, setLang, applyStatic } from './i18n.js';
 import { probeFile, checkBrowser } from './probe.js';
 import { buildPlan, estimateOutputBytes, toOutputTimes } from './plan.js';
-import { buildCaptionTimeline, layoutCaptionSegment } from './captions.js';
+import { buildCaptionTimeline, layoutCaptionSegment, parseSrt } from './captions.js';
 import { rasterizeBands, makeTextMeasurer, closeBitmaps, loadFonts } from './caption-raster.js';
 import { startConversion, CancelledError, outputName, warmUp } from './convert.js';
 import { saveBlob } from './save.js';
@@ -189,6 +189,49 @@ $('bAddCue').onclick = () => {
   refresh();
 };
 
+// 字幕ファイル（SRT）から、テロップをまとめて読み込む
+$('bLoadSrt').onclick = () => {
+  /** @type {HTMLInputElement} */ ($('srtFile')).click();
+};
+
+$('srtFile').onchange = async (e) => {
+  const input = /** @type {HTMLInputElement} */ (e.target);
+  const file = input.files && input.files[0];
+  // 同じファイルをもう一度選べるように、値は毎回捨てる
+  input.value = '';
+  const probe = state.probe;
+  if (!file || !probe) {
+    return;
+  }
+  const { cues, errors } = parseSrt(await file.text());
+  // 動画より後ろに出るものは捨て、はみ出すものは端で止める
+  const usable = [];
+  for (const cue of cues) {
+    if (cue.startUs >= probe.durationUs) {
+      continue;
+    }
+    usable.push({
+      ...cue,
+      id: `c${Date.now()}_${usable.length}`,
+      endUs: Math.min(cue.endUs, probe.durationUs),
+    });
+  }
+  const note = $('srtNote');
+  if (usable.length === 0) {
+    note.textContent = t('tl.srtNone');
+    return;
+  }
+  settings.cues.push(...usable);
+  selectedCueId = usable[0].id;
+  selectedSegmentId = null;
+  timeline.setCues(settings.cues);
+  timeline.select('cue', selectedCueId);
+  drawCueEditor();
+  refresh();
+  note.textContent = t('tl.srtLoaded', { n: usable.length })
+    + (errors.length ? t('tl.srtSkipped', { n: errors.length }) : '');
+};
+
 // いま見ているところで、区間を2つに割る
 $('bSplit').onclick = () => {
   const head = Math.round(video.currentTime * 1e6);
@@ -277,6 +320,7 @@ function reset() {
   state.plan = null;
   resultBlob = null;
   settings.cues = [];
+  $('srtNote').textContent = '';
   video.removeAttribute('src');
   show('drop');
 }
