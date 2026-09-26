@@ -186,8 +186,9 @@ function clamp(v, min, max) {
 }
 
 /**
- * 行の長さをそろえて折り返す。行の数は wrapText と同じまま、いちばん狭く収まる幅を探す
- * （最後の行に1〜2文字だけ残るような、ばらつきのある折り方を避ける）
+ * 読みやすく折り返す。行の数は wrapText と同じまま、次の2つがいちばん良くなる折り方を選ぶ
+ *  ・行の長さがそろっている（最後の行に1〜2文字だけ残らない）
+ *  ・言葉の切れ目で折っている（「音が出なく／ても」のような、言葉の途中で折らない）
  * @param {string} text
  * @param {number} maxWidth
  * @param {string} font
@@ -197,24 +198,98 @@ function clamp(v, min, max) {
 export function wrapBalanced(text, maxWidth, font, measureText) {
   return text.split('\n').flatMap((para) => {
     const greedy = wrapText(para, maxWidth, font, measureText);
-    if (greedy.length < 2) {
+    const chars = [...para];
+    // 長すぎるものは組み合わせが増えすぎるので、素直に折るだけにする
+    if (greedy.length < 2 || chars.length > 160) {
       return greedy;
     }
-    let lo = maxWidth / greedy.length;
-    let hi = maxWidth;
-    let best = greedy;
-    for (let i = 0; i < 14 && hi - lo > 0.5; i++) {
-      const mid = (lo + hi) / 2;
-      const tried = wrapText(para, mid, font, measureText);
-      if (tried.length <= greedy.length) {
-        best = tried;
-        hi = mid;
-      } else {
-        lo = mid;
+    return bestBreaks(chars, greedy.length, maxWidth, font, measureText) || greedy;
+  });
+}
+
+// 言葉の切れ目でないところで折るときの減点（行の長さのばらつきと同じ物差し）
+const SOFT_BREAK_COST = 0.5;
+const KATAKANA_BREAK_COST = 1;
+// 行の終わりに置かない文字
+const NO_LINE_END = '「『（［｛〈《〔(';
+
+/**
+ * i 文字目の手前で折るときの減点。折ってはいけないところは Infinity
+ * @param {string[]} chars
+ * @param {number} i
+ * @returns {number}
+ */
+function breakCost(chars, i) {
+  const a = chars[i - 1];
+  const b = chars[i];
+  if (NO_LINE_START.includes(b) || NO_LINE_END.includes(a)) {
+    return Infinity;
+  }
+  if (/[0-9A-Za-z]/.test(a) && /[0-9A-Za-z]/.test(b)) {
+    return Infinity;
+  }
+  if (a === ' ' || b === ' ' || /[、。，．！？!?,.・）」』]/.test(a)) {
+    return 0;
+  }
+  if (isKatakana(a) && isKatakana(b)) {
+    return KATAKANA_BREAK_COST;
+  }
+  // ひらがなのあとに、漢字・カタカナ・英数字が来るところは、たいてい言葉の切れ目
+  if (/[\u3041-\u309f]/.test(a) && !/[\u3041-\u309f]/.test(b)) {
+    return 0;
+  }
+  return SOFT_BREAK_COST;
+}
+
+/**
+ * 行の数を決めて、いちばん良い折り方を探す（動的計画法）
+ * @param {string[]} chars
+ * @param {number} lineCount
+ * @param {number} maxWidth
+ * @param {string} font
+ * @param {(text: string, font: string) => number} measureText
+ * @returns {string[]|null} 収まる折り方がなければ null
+ */
+function bestBreaks(chars, lineCount, maxWidth, font, measureText) {
+  const n = chars.length;
+  const lineAt = (from, to) => chars.slice(from, to).join('').trim();
+  const target = measureText(chars.join(''), font) / lineCount;
+  // best[k][i]：先頭から i 文字を k 行に収めたときの、いちばん小さい減点
+  const best = Array.from({ length: lineCount + 1 }, () => new Array(n + 1).fill(Infinity));
+  const from = Array.from({ length: lineCount + 1 }, () => new Array(n + 1).fill(-1));
+  best[0][0] = 0;
+  for (let k = 1; k <= lineCount; k++) {
+    for (let i = 1; i <= n; i++) {
+      const cut = i === n ? 0 : breakCost(chars, i);
+      if (cut === Infinity) {
+        continue;
+      }
+      for (let j = i - 1; j >= 0; j--) {
+        if (best[k - 1][j] === Infinity) {
+          continue;
+        }
+        const w = measureText(lineAt(j, i), font);
+        if (w > maxWidth) {
+          break;
+        }
+        const cost = best[k - 1][j] + ((target - w) / maxWidth) ** 2 + cut;
+        if (cost < best[k][i]) {
+          best[k][i] = cost;
+          from[k][i] = j;
+        }
       }
     }
-    return best;
-  });
+  }
+  if (best[lineCount][n] === Infinity) {
+    return null;
+  }
+  const lines = [];
+  for (let k = lineCount, i = n; k > 0; k--) {
+    const j = from[k][i];
+    lines.unshift(lineAt(j, i));
+    i = j;
+  }
+  return lines;
 }
 
 /**

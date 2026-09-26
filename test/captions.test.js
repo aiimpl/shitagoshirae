@@ -143,6 +143,10 @@ test('カタカナの言葉の途中では折らない', () => {
 test('折り返すときは、行の長さをそろえる', () => {
   const lines = wrapBalanced('ブロックの島にパラシュートで降りる', 110, '700 20px sans-serif', measure);
   assert.deepEqual(lines, ['ブロックの島に', 'パラシュートで', '降りる']);
+  // 言葉の途中（送りがな）では折らない。7文字まで入る幅なら「音が出なくても／伝わる」
+  assert.deepEqual(wrapBalanced('音が出なくても伝わる', 86, '700 20px sans-serif', measure), ['音が出なくても', '伝わる']);
+  // 英語は単語の切れ目で、長さをそろえて折る
+  assert.deepEqual(wrapBalanced('hello wonderful world', 130, '700 20px sans-serif', measure), ['hello', 'wonderful', 'world']);
   // 1行に収まるものは、そのまま
   assert.deepEqual(wrapBalanced('短い', 110, '700 20px sans-serif', measure), ['短い']);
   // 改行はそのまま守る
