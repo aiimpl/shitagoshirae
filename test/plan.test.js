@@ -189,6 +189,12 @@ test('1080pで出すときは、無料アカウントの再生が720pになる�
   assert.ok(!plan720.warnings.some((w) => w.code === 'w.playback720'));
 });
 
+test('縦の720p（720x1280）では、再生画質の注意を出さない', () => {
+  const plan = buildPlan(sampleProbe(), sampleSettings({ shape: '9:16', resolution: '720p' }));
+  assert.deepEqual([plan.video.width, plan.video.height], [720, 1280]);
+  assert.ok(!plan.warnings.some((w) => w.code === 'w.playback720'));
+});
+
 test('復号できない動画は止める', () => {
   const probe = sampleProbe();
   probe.video.decodable = false;

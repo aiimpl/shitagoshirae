@@ -24,12 +24,30 @@ export class Tab {
     this.id = 0;
     this.pending = new Map();
     this.logs = [];
+    /** @type {Map<string, ((params: any) => void)[]>} */
+    this.handlers = new Map();
     this.ws = new WebSocket(wsUrl);
     this.ready = new Promise((resolve) => { this.ws.onopen = resolve; });
     this.ws.onmessage = (e) => this.onMessage(JSON.parse(e.data));
   }
 
+  /**
+   * 出来事を受け取る（Page.fileChooserOpened など）
+   * @param {string} method
+   * @param {(params: any) => void} fn
+   */
+  on(method, fn) {
+    const list = this.handlers.get(method) || [];
+    list.push(fn);
+    this.handlers.set(method, list);
+  }
+
   onMessage(msg) {
+    if (msg.method && this.handlers.has(msg.method)) {
+      for (const fn of this.handlers.get(msg.method) || []) {
+        fn(msg.params);
+      }
+    }
     if (msg.id && this.pending.has(msg.id)) {
       this.pending.get(msg.id)(msg);
       this.pending.delete(msg.id);

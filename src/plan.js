@@ -232,7 +232,8 @@ export function checkXLimits(plan, probe, estimatedBytes) {
   if (plan.video.maxFps > X.webMaxFps) {
     out.push({ level: 'info', code: 'w.fpsOverWeb', args: { fps: plan.video.maxFps } });
   }
-  if (plan.video.height > X.freePlaybackHeight) {
+  // 再生画質は短いほうの辺で決まる（縦動画の 720x1280 は「720p」）
+  if (Math.min(plan.video.width, plan.video.height) > X.freePlaybackHeight) {
     out.push({ level: 'info', code: 'w.playback720' });
   }
   if (plan.audio.mode === 'drop' && plan.audio.reason !== 'a.none' && plan.audio.reason !== 'a.muted') {
