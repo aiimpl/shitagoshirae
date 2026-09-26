@@ -83,8 +83,8 @@ export class Compositor {
     this.blur = makeProgram(gl, VERT, FRAG_BLUR);
     this.quad = makeQuad(gl);
     this.srcTex = makeTexture(gl);
-    this.overlayTex = makeTexture(gl);
-    this.overlayKey = '';
+    /** 同じ絵を何度も読み込まないための控え。key → テクスチャ @type {Map<string, WebGLTexture>} */
+    this.overlayTextures = new Map();
     this.blurW = Math.max(2, Math.round(size.width / BLUR_SCALE));
     this.blurH = Math.max(2, Math.round(size.height / BLUR_SCALE));
     this.fboA = makeFbo(gl, this.blurW, this.blurH);
@@ -109,10 +109,10 @@ export class Compositor {
    * 1枚合成する。結果は this.canvas に入る
    * （transferToImageBitmap は WebGL の面では通らない環境があるため、キャンバスのまま渡す）
    * @param {VideoFrame} frame
-   * @param {{ bitmap: ImageBitmap, rect: Rect, key: string }|null} overlay
+   * @param {{ bitmap: ImageBitmap, rect: Rect, key: string }[]} overlays  同時に出すテロップ（上・中・下）
    * @returns {OffscreenCanvas}
    */
-  draw(frame, overlay) {
+  draw(frame, overlays) {
     const gl = this.gl;
     const v = this.video;
     if (!v) {
@@ -141,9 +141,9 @@ export class Compositor {
     // くっきりした本体。回転と切り抜きをここでまとめて当てる
     this.drawTexture(this.srcTex, g.foreground, g.sourceUv, g.uv, 1);
 
-    if (overlay) {
-      this.uploadOverlay(overlay);
-      this.drawTexture(this.overlayTex, overlay.rect, { x: 0, y: 0, w: 1, h: 1 }, identityUv(), 1);
+    for (const overlay of overlays) {
+      const tex = this.overlayTexture(overlay);
+      this.drawTexture(tex, overlay.rect, { x: 0, y: 0, w: 1, h: 1 }, identityUv(), 1);
     }
     // 描いた内容を確実に出してから返す
     gl.flush();
@@ -248,21 +248,38 @@ export class Compositor {
   /**
    * テロップの絵を読み込む（同じ絵なら読み込み直さない）
    * @param {{ bitmap: ImageBitmap, key: string }} overlay
+   * @returns {WebGLTexture}
    */
-  uploadOverlay(overlay) {
-    if (this.overlayKey === overlay.key) {
-      return;
+  overlayTexture(overlay) {
+    const found = this.overlayTextures.get(overlay.key);
+    if (found) {
+      return found;
     }
     const gl = this.gl;
-    gl.bindTexture(gl.TEXTURE_2D, this.overlayTex);
+    // 控えが増えすぎないよう、古いものから捨てる
+    if (this.overlayTextures.size >= 8) {
+      const oldest = this.overlayTextures.keys().next().value;
+      if (oldest !== undefined) {
+        const tex = this.overlayTextures.get(oldest);
+        if (tex) {
+          gl.deleteTexture(tex);
+        }
+        this.overlayTextures.delete(oldest);
+      }
+    }
+    const tex = makeTexture(gl);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, overlay.bitmap);
-    this.overlayKey = overlay.key;
+    this.overlayTextures.set(overlay.key, tex);
+    return tex;
   }
 
   dispose() {
     const gl = this.gl;
     gl.deleteTexture(this.srcTex);
-    gl.deleteTexture(this.overlayTex);
+    for (const tex of this.overlayTextures.values()) {
+      gl.deleteTexture(tex);
+    }
+    this.overlayTextures.clear();
     gl.deleteFramebuffer(this.fboA.fbo);
     gl.deleteTexture(this.fboA.tex);
     gl.deleteFramebuffer(this.fboB.fbo);

@@ -136,14 +136,14 @@ export async function run(file, plan, captions, hooks) {
         continue;
       }
 
-      const overlay = pickCaption(captions, outUs);
+      const overlays = pickCaptions(captions, outUs);
       const duration = sample.microsecondDuration || plan.video.minFrameDeltaUs;
       const frame = sample.toVideoFrame();
       openFrames++;
       /** @type {OffscreenCanvas} */
       let canvas;
       try {
-        canvas = compositor.draw(frame, overlay);
+        canvas = compositor.draw(frame, overlays);
       } finally {
         frame.close();
         openFrames--;
@@ -213,17 +213,19 @@ export async function run(file, plan, captions, hooks) {
 }
 
 /**
- * いまの時刻に出すテロップを探す
+ * いまの時刻に出すテロップを全部集める（上・中・下が同時に出ることがある）
  * @param {import('./types.js').CaptionBitmap[]} captions
  * @param {number} tUs
+ * @returns {import('./types.js').CaptionBitmap[]}
  */
-function pickCaption(captions, tUs) {
+function pickCaptions(captions, tUs) {
+  const out = [];
   for (const c of captions) {
     if (tUs >= c.startUs && tUs < c.endUs) {
-      return c;
+      out.push(c);
     }
   }
-  return null;
+  return out;
 }
 
 /**

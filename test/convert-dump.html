@@ -15,7 +15,9 @@ pre { background: #f4f4f4; padding: 12px; border-radius: 8px; overflow: auto; wh
 <script type="module">
 import { probeFile } from '../src/probe.js';
 import { buildPlan } from '../src/plan.js';
-import { run } from '../src/pipeline.js';
+import { startConversion, CancelledError } from '../src/convert.js';
+import { buildCaptionTimeline, layoutCaptionSegment } from '../src/captions.js';
+import { rasterizeBands, makeTextMeasurer } from '../src/caption-raster.js';
 
 const out = document.getElementById('out');
 const log = (s) => { out.textContent += '\n' + s; };
@@ -38,21 +40,53 @@ window.__convert = async (url, over, saveName) => {
     throw new Error('止められました: ' + JSON.stringify(plan.warnings));
   }
 
-  let cancelled = false;
-  window.__cancel = () => { cancelled = true; };
+  // テロップ（指定があれば絵にして渡す）
+  let captions = [];
+  if (settings.cues.length) {
+    const measure = makeTextMeasurer();
+    const segments = buildCaptionTimeline(settings.cues);
+    const bands = segments.flatMap((seg) => layoutCaptionSegment(seg, {
+      width: plan.video.width, height: plan.video.height, fontFamily: '"Hiragino Sans", sans-serif',
+    }, measure));
+    const raster = await rasterizeBands(bands);
+    captions = raster.bitmaps;
+    log(`テロップ: ${captions.length}枚`);
+  }
+
   const t0 = performance.now();
   let lastProgress = null;
-  const result = await run(file, plan, [], {
-    isCancelled: () => cancelled,
+  const job = startConversion({
+    file,
+    plan,
+    captions,
     onOpened: (info) => log(`開きました: ${info.codecString} ${info.width}x${info.height} 音声:${info.audio}`),
-    onProgress: (p) => { lastProgress = p; },
+    onProgress: (p) => {
+      lastProgress = p;
+      // 指定があれば、途中で取り消して止まり方を見る
+      if (window.__cancelAtRatio && p.ratio >= window.__cancelAtRatio) {
+        window.__cancelAtRatio = 0;
+        log(`${(p.ratio * 100).toFixed(0)}% で取り消します`);
+        job.cancel();
+      }
+    },
   });
+  let result;
+  try {
+    result = await job.done;
+  } catch (err) {
+    if (err instanceof CancelledError) {
+      window.__done = { cancelled: true, lastProgress, elapsedMs: Math.round(performance.now() - t0) };
+      log('取り消しました');
+      return window.__done;
+    }
+    throw err;
+  }
   const elapsed = performance.now() - t0;
   log(`終わりました: ${result.frames}枚 / ${(elapsed / 1000).toFixed(1)}秒`);
 
   let saved = null;
-  if (result.buffer && saveName) {
-    const res = await fetch('/__save/' + saveName, { method: 'POST', body: result.buffer });
+  if (saveName) {
+    const res = await fetch('/__save/' + saveName, { method: 'POST', body: await result.blob.arrayBuffer() });
     saved = await res.json();
     log(`保存: ${saved.saved} (${(saved.bytes / 1024 / 1024).toFixed(1)}MB)`);
   }
@@ -62,7 +96,7 @@ window.__convert = async (url, over, saveName) => {
     frames: result.frames,
     elapsedMs: Math.round(elapsed),
     durationUs: result.durationUs,
-    cancelled: result.cancelled,
+    cancelled: false,
     saved,
     lastProgress,
   };
